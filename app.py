@@ -55,7 +55,7 @@ def fetch_live_news_and_sentiment(ticker):
                 })
         
         if not headlines:
-            return "Neutral (No Feed Flow)", 0.0, [{"Headline": "No active breaking stories found for this asset asset class.", "Link": "#", "Time": "N/A"}]
+            return "Neutral (No Feed Flow)", 0.0, [{"Headline": "No active breaking stories found for this asset class.", "Link": "#", "Time": "N/A"}]
             
         # Analyze top 5 breaking headlines
         total_polarity = 0.0
@@ -93,7 +93,6 @@ def train_predictive_ml_engine(historical_series, forward_horizon_days):
     df = df.dropna()
     
     if len(df) < 10:
-        # Stable fallback projection
         return np.linspace(prices[-1], prices[-1] * 1.01, forward_horizon_days), np.std(prices) * 0.02
         
     feature_cols = ['Lag_1', 'Lag_2', 'Lag_3', 'Rolling_Vol']
@@ -258,12 +257,13 @@ if st.button("🔄 Execute Fresh Cross-Market Scan") or st.session_state['histor
 # ==========================================
 st.markdown("---")
 st.header("📰 Live Bloomberg-Style News Desk Terminal")
-selected_news_asset = st.selectbox("Select Asset to Filter Breaking Headline Stream", tickers, key="news_desk_filter")
+
+# UNIQUE KEY FIXED HERE
+selected_news_asset = st.selectbox("Select Asset to Filter Breaking Headline Stream", tickers, key="news_desk_filter_widget")
 
 if selected_news_asset in st.session_state['live_news_stream']:
     news_items = st.session_state['live_news_stream'][selected_news_asset]
     
-    # Inject styling to make custom containers look like Bloomberg rows
     st.markdown("""
         <style>
         .news-row {
@@ -309,7 +309,8 @@ st.header("⚡ Live Institutional Order Execution Panel")
 order_col1, order_col2, order_col3 = st.columns(3)
 
 with order_col1:
-    trade_ticker = st.selectbox("Select Target Asset to Trade", tickers)
+    # UNIQUE KEY FIXED HERE
+    trade_ticker = st.selectbox("Select Target Asset to Trade", tickers, key="order_routing_asset_selector")
 with order_col2:
     trade_action = st.radio("Order Direction", ["BUY", "SELL"], horizontal=True)
 with order_col3:
@@ -372,7 +373,8 @@ if st.session_state['historical_data'] is not None:
     st.markdown("---")
     st.header("📈 ML Autoregressive Price Horizon Trends")
     
-    selected_chart_asset = st.selectbox("Select Target Asset Timeline to Plot", tickers, key="chart_select")
+    # UNIQUE KEY FIXED HERE
+    selected_chart_asset = st.selectbox("Select Target Asset Timeline to Plot", tickers, key="predictive_horizon_chart_selector")
     chart_df = st.session_state['historical_data']
     
     if selected_chart_asset in chart_df.columns:
@@ -380,7 +382,6 @@ if st.session_state['historical_data'] is not None:
         historical_prices = clean_history[selected_chart_asset].values[-chart_lookback_days:]
         historical_dates = pd.to_datetime(clean_history.index[-chart_lookback_days:])
         
-        # Run stationary forecasting routine
         with st.spinner("Re-training mathematical Ridge matrices..."):
             future_predictions, model_error_std = train_predictive_ml_engine(
                 clean_history[selected_chart_asset].values, 
