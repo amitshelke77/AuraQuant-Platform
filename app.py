@@ -28,6 +28,30 @@ if 'live_news_stream' not in st.session_state:
     st.session_state['live_news_stream'] = {}
 
 # ==========================================
+# DYNAMIC BROAD UNIVERSE INDEX SCRAPER
+# ==========================================
+@st.cache_data(ttl=86400) # Cache index maps for 24 hours to maximize performance
+def load_nifty_500_universe():
+    """Scrapes the complete up-to-date Nifty 500 constituent ticker ledger from public indices."""
+    try:
+        # Pull live official Nifty 500 index table structure
+        url = "https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/ind_nifty500list.csv"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            df = pd.read_csv(response)
+        # Convert raw symbols to yfinance-compatible ticker structures
+        tickers = [f"{sym.strip()}.NS" for sym in df['Symbol'].tolist() if pd.notna(sym)]
+        return sorted(list(set(tickers)))
+    except Exception:
+        # Resilient core institutional fallback selection if scraping network encounters an issue
+        return [
+            "RELIANCE.NS", "TCS.NS", "INFY.NS", "SBIN.NS", "HDFCBANK.NS", 
+            "ICICIBANK.NS", "BHARTIARTL.NS", "ITC.NS", "LT.NS", "HINDUNILVR.NS"
+        ]
+
+nifty_500_tickers = load_nifty_500_universe()
+
+# ==========================================
 # REAL-TIME LIVE RSS NEWS PARSER
 # ==========================================
 def fetch_live_news_and_sentiment(ticker):
@@ -37,7 +61,7 @@ def fetch_live_news_and_sentiment(ticker):
     
     try:
         req = urllib.request.Request(rss_url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with urllib.request.urlopen(req, timeout=3) as response:
             xml_data = response.read()
         
         root = ET.fromstring(xml_data)
@@ -59,13 +83,12 @@ def fetch_live_news_and_sentiment(ticker):
             st.session_state['live_news_stream'][ticker] = fallback_msg
             return "Neutral (No Feed Flow)", 0.0, fallback_msg
             
-        # Analyze top 5 breaking headlines
         total_polarity = 0.0
         for item in headlines[:5]:
             total_polarity += TextBlob(item["Headline"]).sentiment.polarity
             
         avg_polarity = total_polarity / min(len(headlines), 5)
-        st.session_state['live_news_stream'][ticker] = headlines[:6] # Cache for the visual terminal feed
+        st.session_state['live_news_stream'][ticker] = headlines[:6]
         
         if avg_polarity > 0.02:
             return f"🟢 Bullish ({avg_polarity:+.2f})", avg_polarity, headlines
@@ -84,8 +107,6 @@ def fetch_live_news_and_sentiment(ticker):
 def train_predictive_ml_engine(historical_series, forward_horizon_days):
     """Trains a Ridge Regressor on Stationary Return Features to eliminate mathematical explosions."""
     prices = historical_series.astype(float)
-    
-    # Transform prices to daily percentage returns (Stationary Core)
     returns = np.diff(prices) / prices[:-1]
     
     df = pd.DataFrame({'Return': returns})
@@ -106,10 +127,9 @@ def train_predictive_ml_engine(historical_series, forward_horizon_days):
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     
-    model = Ridge(alpha=10.0) # Regularization parameter to damp over-fitting noise
+    model = Ridge(alpha=10.0)
     model.fit(X_scaled, y)
     
-    # Forecast forward returns autoregressively
     predicted_returns = []
     recent_returns = list(df['Return'].values[-5:])
     recent_vols = list(df['Rolling_Vol'].values[-5:])
@@ -124,15 +144,12 @@ def train_predictive_ml_engine(historical_series, forward_horizon_days):
         
         scaled_vector = scaler.transform(input_vector)
         pred_return = float(model.predict(scaled_vector)[0])
-        
-        # Keep returns structurally clamped to prevent runaway velocity compounding
         pred_return = np.clip(pred_return, -0.04, 0.04)
         
         predicted_returns.append(pred_return)
         recent_returns.append(pred_return)
         recent_vols.append(np.std(recent_returns[-5:]))
         
-    # Reconstruct final price path coordinates by compounding predicted returns forward
     reconstructed_prices = []
     last_price = prices[-1]
     
@@ -141,45 +158,48 @@ def train_predictive_ml_engine(historical_series, forward_horizon_days):
         reconstructed_prices.append(next_price)
         last_price = next_price
         
-    residual_volatility = float(np.std(prices[-10:])) # Localized historical volatility scaling
+    residual_volatility = float(np.std(prices[-10:]))
     return np.array(reconstructed_prices), residual_volatility
 
 # ==========================================
-# SYSTEM CORE CROSS-MARKET SCANNER
+# SYSTEM CORE CROSS-MARKET SCANNER (BATCH)
 # ==========================================
-def run_production_scanner(tickers, capital_base, max_risk_pct):
+def run_production_scanner(target_tickers, capital_base, max_risk_pct):
     signal_ledger = []
     chart_clean_df = pd.DataFrame()
     prices_map = {}
     
-    for ticker in tickers:
-        try:
-            # Force background news sync first to guarantee session caching
-            sentiment_label, _, _ = fetch_live_news_and_sentiment(ticker)
+    if not target_tickers:
+        return pd.DataFrame(), chart_clean_df
+
+    try:
+        # Perform a fast combined batch download over the internet to reduce connection overhead
+        raw_data = yf.download(target_tickers, start="2025-01-01", progress=False)
+        if raw_data.empty:
+            return pd.DataFrame(), chart_clean_df
             
-            raw_ticker = yf.download(ticker, start="2025-01-01", progress=False)
-            if raw_ticker.empty:
-                signal_ledger.append({
-                    "Asset Universe": ticker,
-                    "Live Value (₹)": 0.0,
-                    "Real-time News Sentiment": sentiment_label,
-                    "Support Band": 0.0,
-                    "Resistance Band": 0.0,
-                    "Algorithmic Action": "⚠️ connection delayed",
-                    "Risk Target Sizing": "0"
-                })
+        # Standardize modern multi-index dataframes from yfinance
+        if isinstance(raw_data.columns, pd.MultiIndex):
+            close_matrix = raw_data['Close']
+        else:
+            close_matrix = pd.DataFrame(raw_data['Close']) if 'Close' in raw_data else pd.DataFrame(raw_data)
+    except Exception:
+        return pd.DataFrame(), chart_clean_df
+        
+    for ticker in target_tickers:
+        try:
+            if ticker not in close_matrix.columns:
                 continue
                 
-            if isinstance(raw_ticker.columns, pd.MultiIndex):
-                raw_ticker.columns = raw_ticker.columns.get_level_values(-1)
-            
-            series_cleaned = raw_ticker['Close'].dropna() if 'Close' in raw_ticker.columns else raw_ticker.iloc[:, 0].dropna()
+            series_cleaned = close_matrix[ticker].dropna()
+            if series_cleaned.empty:
+                continue
+                
             flat_prices = series_cleaned.values.flatten().astype(float)
             date_strings = series_cleaned.index.strftime('%Y-%m-%d')
             
             if chart_clean_df.empty:
                 chart_clean_df = pd.DataFrame(index=date_strings)
-                
             chart_clean_df[ticker] = pd.Series(flat_prices, index=date_strings)
             
             df_ticker = pd.DataFrame({'Price': flat_prices}, index=series_cleaned.index)
@@ -213,6 +233,8 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
                 action = "⚪ HOLD (Neutral)"
                 suggested_sizing = "0"
                 
+            sentiment_label, _, _ = fetch_live_news_and_sentiment(ticker)
+                
             signal_ledger.append({
                 "Asset Universe": ticker,
                 "Live Value (₹)": round(current_price, 2),
@@ -222,7 +244,7 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
                 "Algorithmic Action": action,
                 "Risk Target Sizing": suggested_sizing
             })
-        except Exception as e:
+        except Exception:
             pass
             
     st.session_state['current_prices'] = prices_map
@@ -235,8 +257,11 @@ st.title("🤖 AuraQuant Institutional Intelligence Terminal")
 st.markdown("---")
 
 st.sidebar.header("🕹️ Terminal Control Panel")
-watchlist_input = st.sidebar.text_input("Asset Scan Universe", "RELIANCE.NS, TCS.NS, INFY.NS, SBIN.NS")
-tickers = [t.strip() for t in watchlist_input.split(",")]
+st.sidebar.success(f"📈 Loaded {len(nifty_500_tickers)} Tickers into the Universe Panel.")
+
+# Multi-select component containing all 500 stocks dynamically
+selected_watchlist = [s for s in ["RELIANCE.NS", "TCS.NS", "INFY.NS", "SBIN.NS"] if s in nifty_500_tickers]
+tickers = st.sidebar.multiselect("Asset Scan Universe (Nifty 500 Selection)", options=nifty_500_tickers, default=selected_watchlist)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🛡️ Risk Management Parameters")
@@ -253,15 +278,16 @@ future_horizon_days = st.sidebar.slider("AI ML Forecast Horizon (Days)", min_val
 # ==========================================
 st.header("🔍 Real-Time Multi-Asset Scanner & Machine Learning Intelligence")
 
-# Trigger scan parsing execution
 if st.button("🔄 Execute Fresh Cross-Market Scan"):
-    with st.spinner("Compiling stationary return feature matrix..."):
-        ledger_df, historical_data = run_production_scanner(tickers, investment_base, risk_percentage)
-        st.session_state['historical_data'] = historical_data
-        st.session_state['ledger_df'] = ledger_df
+    if len(tickers) > 0:
+        with st.spinner("Compiling batch index price matrices..."):
+            ledger_df, historical_data = run_production_scanner(tickers, investment_base, risk_percentage)
+            st.session_state['historical_data'] = historical_data
+            st.session_state['ledger_df'] = ledger_df
+    else:
+        st.warning("Please pick at least one asset symbol from the Nifty 500 selector sidebar panel to scan.")
 
-# Persistently show data frame metrics once loaded
-if st.session_state['ledger_df'] is not None:
+if st.session_state['ledger_df'] is not None and not st.session_state['ledger_df'].empty:
     st.subheader("📋 Core Intelligence Data Streams")
     st.table(st.session_state['ledger_df'])
 
@@ -271,66 +297,68 @@ if st.session_state['ledger_df'] is not None:
 st.markdown("---")
 st.header("📰 Live Bloomberg-Style News Desk Terminal")
 
-selected_news_asset = st.selectbox("Select Asset to Filter Breaking Headline Stream", tickers, key="news_desk_filter_widget")
+if len(tickers) > 0:
+    selected_news_asset = st.selectbox("Select Asset to Filter Breaking Headline Stream", tickers, key="news_desk_filter_widget")
 
-# Check if cache holds information, if empty do a quick target sync on demand
-if selected_news_asset not in st.session_state['live_news_stream']:
-    with st.spinner(f"Fetching real-time updates for {selected_news_asset}..."):
-        fetch_live_news_and_sentiment(selected_news_asset)
+    if selected_news_asset not in st.session_state['live_news_stream']:
+        with st.spinner(f"Fetching real-time updates for {selected_news_asset}..."):
+            fetch_live_news_and_sentiment(selected_news_asset)
 
-news_items = st.session_state['live_news_stream'].get(selected_news_asset, [])
+    news_items = st.session_state['live_news_stream'].get(selected_news_asset, [])
 
-# Clean formatting check to make sure raw html strings or empty placeholders don't spill out
-if news_items and "No active breaking stories" not in news_items[0]["Headline"] and "Connection delayed" not in news_items[0]["Headline"]:
-    for item in news_items:
-        time_col, text_col = st.columns([1, 6])
-        with time_col:
-            st.caption(f"⏱️ {item['Time']}")
-        with text_col:
-            st.markdown(f"[{item['Headline']}]({item['Link']})")
+    if news_items and "No active breaking stories" not in news_items[0]["Headline"] and "Connection delayed" not in news_items[0]["Headline"]:
+        for item in news_items:
+            time_col, text_col = st.columns([1, 6])
+            with time_col:
+                st.caption(f"⏱️ {item['Time']}")
+            with text_col:
+                st.markdown(f"[{item['Headline']}]({item['Link']})")
+    else:
+        st.info(f"ℹ️ No active breaking stories found for {selected_news_asset} at this time.")
 else:
-    st.info(f"ℹ️ No active breaking stories found for {selected_news_asset} at this time.")
+    st.info("Select active stock tickers to unlock live web scraping pipelines.")
 
 # ==========================================
 # ORDER ROUTING DESK & LEDGER SIMULATION
 # ==========================================
 st.markdown("---")
 st.header("⚡ Live Institutional Order Execution Panel")
-order_col1, order_col2, order_col3 = st.columns(3)
+if len(tickers) > 0:
+    order_col1, order_col2, order_col3 = st.columns(3)
 
-with order_col1:
-    trade_ticker = st.selectbox("Select Target Asset to Trade", tickers, key="order_routing_asset_selector")
-with order_col2:
-    trade_action = st.radio("Order Direction", ["BUY", "SELL"], horizontal=True)
-with order_col3:
-    trade_shares = st.number_input("Order Quantity (Shares)", min_value=1, value=10, step=1)
+    with order_col1:
+        trade_ticker = st.selectbox("Select Target Asset to Trade", tickers, key="order_routing_asset_selector")
+    with order_col2:
+        trade_action = st.radio("Order Direction", ["BUY", "SELL"], horizontal=True)
+    with order_col3:
+        trade_shares = st.number_input("Order Quantity (Shares)", min_value=1, value=10, step=1)
 
-if st.button("🚀 Transmit Order Payload"):
-    current_market_price = st.session_state['current_prices'].get(trade_ticker, None)
-    
-    if current_market_price is None:
-        st.error("Please run the market scanner above to pull current equity valuations first.")
-    else:
-        if trade_action == "BUY":
-            current_holding = st.session_state['portfolio'].get(trade_ticker, {"shares": 0, "avg_price": 0.0})
-            total_shares = current_holding["shares"] + trade_shares
-            total_cost = (current_holding["shares"] * current_holding["avg_price"]) + (trade_shares * current_market_price)
-            avg_entry = total_cost / total_shares if total_shares > 0 else 0.0
-            
-            st.session_state['portfolio'][trade_ticker] = {"shares": total_shares, "avg_price": avg_entry}
-            st.success(f"Execution Successful: Bought {trade_shares} of {trade_ticker} at ₹{current_market_price:,.2f}")
-            
-        elif trade_action == "SELL":
-            current_holding = st.session_state['portfolio'].get(trade_ticker, {"shares": 0, "avg_price": 0.0})
-            if current_holding["shares"] < trade_shares:
-                st.error(f"Execution Aborted: Insufficient portfolio inventory for {trade_ticker}.")
-            else:
-                total_shares = current_holding["shares"] - trade_shares
-                if total_shares == 0:
-                    st.session_state['portfolio'].pop(trade_ticker, None)
+    if st.button("🚀 Transmit Order Payload"):
+        current_market_price = st.session_state['current_prices'].get(trade_ticker, None)
+        
+        if current_market_price is None:
+            st.error("Please run the market scanner above to pull current equity valuations first.")
+        else:
+            if trade_action == "BUY":
+                current_holding = st.session_state['portfolio'].get(trade_ticker, {"shares": 0, "avg_price": 0.0})
+                total_shares = current_holding["shares"] + trade_shares
+                total_cost = (current_holding["shares"] * current_holding["avg_price"]) + (trade_shares * current_market_price)
+                avg_entry = total_cost / total_shares if total_shares > 0 else 0.0
+                
+                st.session_state['portfolio'][trade_ticker] = {"shares": total_shares, "avg_price": avg_entry}
+                st.success(f"Execution Successful: Bought {trade_shares} of {trade_ticker} at ₹{current_market_price:,.2f}")
+                
+            elif trade_action == "SELL":
+                current_holding = st.session_state['portfolio'].get(trade_ticker, {"shares": 0, "avg_price": 0.0})
+                if current_holding["shares"] < trade_shares:
+                    st.error(f"Execution Aborted: Insufficient portfolio inventory for {trade_ticker}.")
                 else:
-                    st.session_state['portfolio'][trade_ticker]["shares"] = total_shares
-                st.success(f"Execution Successful: Sold {trade_shares} of {trade_ticker} at ₹{current_market_price:,.2f}")
+                    total_shares = current_holding["shares"] - trade_shares
+                    if total_shares == 0:
+                        st.session_state['portfolio'].pop(trade_ticker, None)
+                    else:
+                        st.session_state['portfolio'][trade_ticker]["shares"] = total_shares
+                    st.success(f"Execution Successful: Sold {trade_shares} of {trade_ticker} at ₹{current_market_price:,.2f}")
 
 if st.session_state['portfolio']:
     st.subheader("💼 Active Simulated Portfolio Positions")
@@ -358,7 +386,7 @@ if st.session_state['portfolio']:
 # ==========================================
 # ML PREDICTIVE PRICE INTELLIGENCE HORIZON
 # ==========================================
-if st.session_state['historical_data'] is not None:
+if st.session_state['historical_data'] is not None and len(tickers) > 0:
     st.markdown("---")
     st.header("📈 ML Autoregressive Price Horizon Trends")
     
@@ -381,14 +409,12 @@ if st.session_state['historical_data'] is not None:
         
         fig = go.Figure()
         
-        # Ground Truth History Trace
         fig.add_trace(go.Scatter(
             x=historical_dates, y=historical_prices,
             mode='lines', name='Historical Value',
             line=dict(color='#00bfff', width=2.5)
         ))
         
-        # Stable ML Path Trace
         pred_x = [historical_dates[-1]] + future_dates
         pred_y = [historical_prices[-1]] + list(future_predictions)
         fig.add_trace(go.Scatter(
@@ -397,7 +423,6 @@ if st.session_state['historical_data'] is not None:
             line=dict(color='#ffaa00', width=2, dash='dash')
         ))
         
-        # Controlled Volatility Error Target Channels
         upper_y = [historical_prices[-1]]
         lower_y = [historical_prices[-1]]
         for idx in range(future_horizon_days):
