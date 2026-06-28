@@ -24,13 +24,14 @@ if 'current_prices' not in st.session_state:
     st.session_state['current_prices'] = {}
 if 'ledger_df' not in st.session_state:
     st.session_state['ledger_df'] = None
+if 'live_news_stream' not in st.session_state:
+    st.session_state['live_news_stream'] = {}
 
 # ==========================================
 # REAL-TIME LIVE RSS NEWS PARSER
 # ==========================================
-def fetch_live_sentiment(ticker):
-    """Fetches real-time RSS news headlines from Yahoo Finance and calculates true sentiment polarity."""
-    # Clean ticker name for standard financial RSS parsing formats
+def fetch_live_news_and_sentiment(ticker):
+    """Fetches real-time RSS headlines from Yahoo Finance, logs headlines, and scores sentiment."""
     clean_ticker = ticker.split(".")[0] if "." in ticker else ticker
     rss_url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={clean_ticker}&region=US&lang=en-US"
     
@@ -43,87 +44,102 @@ def fetch_live_sentiment(ticker):
         headlines = []
         for item in root.findall('.//item'):
             title = item.find('title')
+            link = item.find('link')
+            pub_date = item.find('pubDate')
+            
             if title is not None and title.text:
-                headlines.append(title.text)
+                headlines.append({
+                    "Headline": title.text,
+                    "Link": link.text if link is not None else "#",
+                    "Time": pub_date.text[:16] if pub_date is not None else "Recent"
+                })
         
         if not headlines:
-            return "Neutral (No Active Feed Flow)", 0.0
+            return "Neutral (No Feed Flow)", 0.0, [{"Headline": "No active breaking stories found for this asset asset class.", "Link": "#", "Time": "N/A"}]
             
-        # Run text processing analytics across raw parsed strings
+        # Analyze top 5 breaking headlines
         total_polarity = 0.0
-        for text in headlines[:5]:  # Process the top 5 freshest breaking alerts
-            total_polarity += TextBlob(text).sentiment.polarity
+        for item in headlines[:5]:
+            total_polarity += TextBlob(item["Headline"]).sentiment.polarity
             
         avg_polarity = total_polarity / min(len(headlines), 5)
+        st.session_state['live_news_stream'][ticker] = headlines[:6] # Cache for the visual terminal feed
         
-        if avg_polarity > 0.05:
-            return f"🟢 Bullish Alpha ({avg_polarity:+.2f})", avg_polarity
-        elif avg_polarity < -0.05:
-            return f"🔴 Bearish Risk ({avg_polarity:.2f})", avg_polarity
-        return f"⚪ Neutral ({avg_polarity:+.2f})", avg_polarity
+        if avg_polarity > 0.02:
+            return f"🟢 Bullish ({avg_polarity:+.2f})", avg_polarity, headlines
+        elif avg_polarity < -0.02:
+            return f"🔴 Bearish ({avg_polarity:.2f})", avg_polarity, headlines
+        return f"⚪ Neutral ({avg_polarity:+.2f})", avg_polarity, headlines
         
     except Exception as e:
-        return "⚪ Neutral (Feed Timeout)", 0.0
+        return "⚪ Neutral (Timeout)", 0.0, [{"Headline": f"Connection delayed: {str(e)}", "Link": "#", "Time": "N/A"}]
 
 # ==========================================
-# ADVANCED MACHINE LEARNING ENGINE
+# STATIONARY ADVANCED ML CORE ENGINE
 # ==========================================
 def train_predictive_ml_engine(historical_series, forward_horizon_days):
-    """Trains a Ridge Regressor on historical technical features and forecasts out across a target window."""
-    df = pd.DataFrame({'Price': historical_series.astype(float)})
+    """Trains a Ridge Regressor on Stationary Return Features to eliminate mathematical explosions."""
+    prices = historical_series.astype(float)
     
-    # Feature Engineering Layer
-    df['Lag_1'] = df['Price'].shift(1)
-    df['Lag_3'] = df['Price'].shift(3)
-    df['Lag_5'] = df['Price'].shift(5)
-    df['Rolling_Return'] = df['Price'].pct_change(5)
-    df['Rolling_Volatility'] = df['Price'].rolling(10).std()
+    # Transform prices to daily percentage returns (Stationary Core)
+    returns = np.diff(prices) / prices[:-1]
+    
+    df = pd.DataFrame({'Return': returns})
+    df['Lag_1'] = df['Return'].shift(1)
+    df['Lag_2'] = df['Return'].shift(2)
+    df['Lag_3'] = df['Return'].shift(3)
+    df['Rolling_Vol'] = df['Return'].rolling(5).std()
     
     df = df.dropna()
-    if len(df) < 15:  # Fallback logic if the selected view window is too tiny
-        return np.linspace(historical_series[-1], historical_series[-1] * 1.02, forward_horizon_days), np.std(historical_series)
+    
+    if len(df) < 10:
+        # Stable fallback projection
+        return np.linspace(prices[-1], prices[-1] * 1.01, forward_horizon_days), np.std(prices) * 0.02
         
-    feature_cols = ['Lag_1', 'Lag_3', 'Lag_5', 'Rolling_Return', 'Rolling_Volatility']
+    feature_cols = ['Lag_1', 'Lag_2', 'Lag_3', 'Rolling_Vol']
     X = df[feature_cols].values
-    y = df['Price'].values
+    y = df['Return'].values
     
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     
-    # Train regularization ridge model
-    model = Ridge(alpha=1.0)
+    model = Ridge(alpha=10.0) # Regularization parameter to damp over-fitting noise
     model.fit(X_scaled, y)
     
-    # Iterative Walk-Forward Autoregressive Projection Core
-    predictions = []
-    last_known_features = df.iloc[-1].copy()
-    current_price_pointer = float(last_known_features['Price'])
-    
-    # Collect tracking slices to maintain dynamic lag states
-    recent_prices = list(df['Price'].values[-5:])
-    recent_returns = list(df['Rolling_Return'].values[-5:])
-    recent_vols = list(df['Rolling_Volatility'].values[-10:])
+    # Forecast forward returns autoregressively
+    predicted_returns = []
+    recent_returns = list(df['Return'].values[-5:])
+    recent_vols = list(df['Rolling_Vol'].values[-5:])
     
     for _ in range(forward_horizon_days):
         input_vector = np.array([[
-            recent_prices[-1],  # Lag 1
-            recent_prices[-3],  # Lag 3
-            recent_prices[-5],  # Lag 5
-            recent_returns[-1], # Rolling Return
-            np.mean(recent_vols) # Expected Volatility Target
+            recent_returns[-1],
+            recent_returns[-2],
+            recent_returns[-3],
+            np.mean(recent_vols)
         ]])
         
         scaled_vector = scaler.transform(input_vector)
-        next_pred = float(model.predict(scaled_vector)[0])
-        predictions.append(next_pred)
+        pred_return = float(model.predict(scaled_vector)[0])
         
-        # Shift and update memory arrays recursively
-        recent_prices.append(next_pred)
-        recent_returns.append((next_pred - recent_prices[-2]) / recent_prices[-2] if recent_prices[-2] != 0 else 0)
-        recent_vols.append(np.std(recent_prices[-5:]))
+        # Keep returns structurally clamped to prevent runaway velocity compounding
+        pred_return = np.clip(pred_return, -0.04, 0.04)
         
-    residual_volatility = float(np.std(y - model.predict(X_scaled)))
-    return np.array(predictions), residual_volatility
+        predicted_returns.append(pred_return)
+        recent_returns.append(pred_return)
+        recent_vols.append(np.std(recent_returns[-5:]))
+        
+    # Reconstruct final price path coordinates by compounding predicted returns forward
+    reconstructed_prices = []
+    last_price = prices[-1]
+    
+    for r in predicted_returns:
+        next_price = last_price * (1.0 + r)
+        reconstructed_prices.append(next_price)
+        last_price = next_price
+        
+    residual_volatility = float(np.std(prices[-10:])) # Localized historical volatility scaling
+    return np.array(reconstructed_prices), residual_volatility
 
 # ==========================================
 # SYSTEM CORE CROSS-MARKET SCANNER
@@ -164,10 +180,9 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
             
             prices_map[ticker] = current_price
             
-            # Integrated live news sentiment analytics pipeline
-            sentiment_label, _ = fetch_live_sentiment(ticker)
+            # Execute news parser
+            sentiment_label, _, _ = fetch_live_news_and_sentiment(ticker)
             
-            # Sizing calculation structures
             stop_loss = lower_band * 0.98  
             risk_per_share = max(current_price - stop_loss, current_price * 0.02) 
             cash_at_risk = capital_base * (max_risk_pct / 100.0)
@@ -204,7 +219,7 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
 # ==========================================
 # TERMINAL USER INTERFACE VIEW LAYER
 # ==========================================
-st.title("🤖 AuraQuant AI Predictive Intelligence Terminal")
+st.title("🤖 AuraQuant Institutional Intelligence Terminal")
 st.markdown("---")
 
 st.sidebar.header("🕹️ Terminal Control Panel")
@@ -217,18 +232,18 @@ investment_base = st.sidebar.number_input("Capital Investment Base (₹)", min_v
 risk_percentage = st.sidebar.slider("Max Account Risk Per Trade (%)", min_value=0.25, max_value=5.0, value=1.0, step=0.25)
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("🔮 ML Autoregressive Tuner")
+st.sidebar.subheader("🔮 ML Stationary Engine Tuner")
 chart_lookback_days = st.sidebar.slider("Training Feature Window (Days)", min_value=15, max_value=180, value=60, step=5)
 future_horizon_days = st.sidebar.slider("AI ML Forecast Horizon (Days)", min_value=7, max_value=90, value=30, step=1)
 
 # ==========================================
-# COMPONENT 1: CROSS MARKET ML ENGINE SCANNER
+# COMPONENT 1: SCANNER & INTELLIGENCE STREAM
 # ==========================================
 st.header("🔍 Real-Time Multi-Asset Scanner & Machine Learning Intelligence")
 
 if st.button("🔄 Execute Fresh Cross-Market Scan") or st.session_state['historical_data'] is not None:
-    if st.session_state['historical_data'] is None or st.sidebar.button("Force Clear Engine Memory"):
-        with st.spinner("Compiling structural feature matrix & connection loops..."):
+    if st.session_state['historical_data'] is None:
+        with st.spinner("Compiling stationary return feature matrix..."):
             ledger_df, historical_data = run_production_scanner(tickers, investment_base, risk_percentage)
             st.session_state['historical_data'] = historical_data
             st.session_state['ledger_df'] = ledger_df
@@ -237,6 +252,24 @@ if st.button("🔄 Execute Fresh Cross-Market Scan") or st.session_state['histor
 
     st.subheader("📋 Core Intelligence Data Streams")
     st.table(ledger_df)
+
+# ==========================================
+# NEW COMPONENT: THE BLOOMBERG NEWS SECTION
+# ==========================================
+st.markdown("---")
+st.header("📰 Live Bloomberg-Style News Desk Terminal")
+selected_news_asset = st.selectbox("Select Asset to Filter Breaking Headline Stream", tickers)
+
+if selected_news_asset in st.session_state['live_news_stream']:
+    news_items = st.session_state['live_news_stream'][selected_news_asset]
+    for item in news_items:
+        col_time, col_headline = st.columns([1, 5])
+        with col_time:
+            st.caption(f"⏱️ {item['Time']}")
+        with col_headline:
+            st.markdown(f"**[{item['Headline']}]({item['Link']})**")
+else:
+    st.info("Run a Cross-Market Scan above to sync live breaking news wires.")
 
 # ==========================================
 # ORDER ROUTING DESK & LEDGER SIMULATION
@@ -309,7 +342,7 @@ if st.session_state['historical_data'] is not None:
     st.markdown("---")
     st.header("📈 ML Autoregressive Price Horizon Trends")
     
-    selected_chart_asset = st.selectbox("Select Target Asset Timeline to Plot", tickers)
+    selected_chart_asset = st.selectbox("Select Target Asset Timeline to Plot", tickers, key="chart_select")
     chart_df = st.session_state['historical_data']
     
     if selected_chart_asset in chart_df.columns:
@@ -317,8 +350,8 @@ if st.session_state['historical_data'] is not None:
         historical_prices = clean_history[selected_chart_asset].values[-chart_lookback_days:]
         historical_dates = pd.to_datetime(clean_history.index[-chart_lookback_days:])
         
-        # Execute Scikit-Learn Predictive Routine
-        with st.spinner("Re-training Ridge optimization matrices..."):
+        # Run stationary forecasting routine
+        with st.spinner("Re-training mathematical Ridge matrices..."):
             future_predictions, model_error_std = train_predictive_ml_engine(
                 clean_history[selected_chart_asset].values, 
                 future_horizon_days
@@ -329,14 +362,14 @@ if st.session_state['historical_data'] is not None:
         
         fig = go.Figure()
         
-        # Trace 1: Ground Truth History
+        # Ground Truth History Trace
         fig.add_trace(go.Scatter(
             x=historical_dates, y=historical_prices,
             mode='lines', name='Historical Value',
             line=dict(color='#00bfff', width=2.5)
         ))
         
-        # Trace 2: ML Auto-Regressive Projections
+        # Stable ML Path Trace
         pred_x = [historical_dates[-1]] + future_dates
         pred_y = [historical_prices[-1]] + list(future_predictions)
         fig.add_trace(go.Scatter(
@@ -345,11 +378,11 @@ if st.session_state['historical_data'] is not None:
             line=dict(color='#ffaa00', width=2, dash='dash')
         ))
         
-        # Trace 3 & 4: Volatility Error Boundaries
+        # Controlled Volatility Error Target Channels
         upper_y = [historical_prices[-1]]
         lower_y = [historical_prices[-1]]
         for idx in range(future_horizon_days):
-            time_factor = np.sqrt(idx + 1) * 0.45
+            time_factor = np.sqrt(idx + 1) * 0.35
             upper_y.append(future_predictions[idx] + (model_error_std * time_factor))
             lower_y.append(future_predictions[idx] - (model_error_std * time_factor))
             
