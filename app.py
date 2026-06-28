@@ -280,7 +280,8 @@ if selected_news_asset not in st.session_state['live_news_stream']:
 
 news_items = st.session_state['live_news_stream'].get(selected_news_asset, [])
 
-if news_items:
+# Clean formatting check to make sure raw html strings or empty placeholders don't spill out
+if news_items and "No active breaking stories" not in news_items[0]["Headline"] and "Connection delayed" not in news_items[0]["Headline"]:
     for item in news_items:
         time_col, text_col = st.columns([1, 6])
         with time_col:
@@ -288,7 +289,7 @@ if news_items:
         with text_col:
             st.markdown(f"[{item['Headline']}]({item['Link']})")
 else:
-    st.info("Run a Cross-Market Scan above to sync live breaking news wires.")
+    st.info(f"ℹ️ No active breaking stories found for {selected_news_asset} at this time.")
 
 # ==========================================
 # ORDER ROUTING DESK & LEDGER SIMULATION
