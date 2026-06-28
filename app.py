@@ -9,7 +9,7 @@ from textblob import TextBlob
 st.set_page_config(page_title="AuraQuant Trader Terminal", layout="wide")
 
 # ==========================================
-# CORE MATHEMATICAL & NLP ENGINES
+# CORE MATHEMATICAL & RISK ENGINES
 # ==========================================
 def get_sentiment_score(ticker):
     news_feeds = {
@@ -24,7 +24,7 @@ def get_sentiment_score(ticker):
     if sentiment_avg < -0.1: return "Bearish (Risk Alert)"
     return "Neutral"
 
-def run_production_scanner(tickers):
+def run_production_scanner(tickers, capital_base, max_risk_pct):
     signal_ledger = []
     # Batch download historical closing prices
     data = yf.download(tickers, start="2025-01-01", auto_adjust=True)['Close']
@@ -43,20 +43,38 @@ def run_production_scanner(tickers):
             latest = df_ticker.iloc[-1]
             current_price = latest['Price']
             
-            if current_price < latest['Lower']:
+            # Technical Risk Boundary Logic
+            lower_band = latest['Lower']
+            upper_band = latest['Upper']
+            
+            # Risk Sizing Math
+            stop_loss = lower_band * 0.98  # Stop loss set 2% below technical support band
+            risk_per_share = max(current_price - stop_loss, current_price * 0.02) # Prevent zero division
+            cash_at_risk = capital_base * (max_risk_pct / 100.0)
+            calculated_shares = int(cash_at_risk // risk_per_share)
+            
+            # Enforce overall capital cap constraints
+            if (calculated_shares * current_price) > capital_base:
+                calculated_shares = int(capital_base // current_price)
+
+            if current_price < lower_band:
                 action = "🟢 BUY (Oversold Entry)"
-            elif current_price > latest['Upper']:
+                suggested_sizing = f"{calculated_shares:,} Shares"
+            elif current_price > upper_band:
                 action = "🔴 SELL (Overbought Exit)"
+                suggested_sizing = "0 (Liquidate Position)"
             else:
                 action = "⚪ HOLD (No Signal)"
+                suggested_sizing = "0"
                 
             signal_ledger.append({
                 "Asset": ticker,
                 "Current Price": round(current_price, 2),
                 "Sentiment Alpha": get_sentiment_score(ticker),
-                "Lower Band (Buy Level)": round(latest['Lower'], 2),
-                "Upper Band (Sell Level)": round(latest['Upper'], 2),
-                "Signal Matrix": action
+                "Lower Band (Buy Level)": round(lower_band, 2),
+                "Upper Band (Sell Level)": round(upper_band, 2),
+                "Signal Matrix": action,
+                "Recommended Sizing": suggested_sizing
             })
         except:
             pass
@@ -70,12 +88,20 @@ st.title("📊 AuraQuant Institutional Bloomberg-Clone Terminal")
 st.markdown("---")
 
 # ==========================================
-# SIDEBAR CONTROLS
+# SIDEBAR CONTROLS (WITH INTEGRATED RISK ENGINE)
 # ==========================================
 st.sidebar.header("🕹️ Terminal Control Panel")
 watchlist_input = st.sidebar.text_input("Asset Scan Universe", "RELIANCE.NS, TCS.NS, INFY.NS, SBIN.NS, HDFCBANK.NS, ICICIBANK.NS")
 tickers = [t.strip() for t in watchlist_input.split(",")]
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🛡️ Risk Management Parameters")
 investment_base = st.sidebar.number_input("Capital Investment Base (₹)", min_value=10000, value=1000000, step=50000)
+risk_percentage = st.sidebar.slider("Max Account Risk Per Trade (%)", min_value=0.25, max_value=5.0, value=1.0, step=0.25)
+
+# Calculate active dollar value of selected exposure
+total_risk_exposure = investment_base * (risk_percentage / 100.0)
+st.sidebar.info(f"💼 Risk Threshold per Asset: ₹{total_risk_exposure:,.2f}")
 
 # ==========================================
 # CORE COMPONENT 1: LIVE ENGINE SCANNER
@@ -83,15 +109,15 @@ investment_base = st.sidebar.number_input("Capital Investment Base (₹)", min_v
 st.header("🔍 Real-Time Multi-Asset Scanner & Alpha Intelligence")
 
 if st.button("🔄 Execute Fresh Cross-Market Scan"):
-    with st.spinner("Processing multi-asset standard deviations & news sentiment..."):
-        ledger_df = run_production_scanner(tickers)
+    with st.spinner("Processing multi-asset risk bands & calculation models..."):
+        ledger_df = run_production_scanner(tickers, investment_base, risk_percentage)
         
         # Pull high conviction breakouts instantly
         actionable = ledger_df[ledger_df['Signal Matrix'] != "⚪ HOLD (No Signal)"]
         
         if not actionable.empty:
-            st.warning("⚠️ CRITICAL REVERSION SIGNALS DETECTED")
-            st.table(actionable)
+            st.warning("⚠️ CRITICAL REVERSION SIGNALS DETECTED - RISK ALLOCATION ACTIVE")
+            st.table(actionable[["Asset", "Current Price", "Signal Matrix", "Recommended Sizing"]])
         else:
             st.success("✅ SYSTEM STATE: NEUTRAL. No assets have breached statistical bands today. Preserve cash equity.")
             
@@ -110,7 +136,7 @@ with col1:
     mock_weights = {"RELIANCE.NS": 44.38, "TCS.NS": 26.03, "INFY.NS": 15.62, "SBIN.NS": 13.98}
     alloc_data = []
     for t in tickers:
-        w = mock_weights.get(t, 16.66) # Default to even split if basket expands
+        w = mock_weights.get(t, 16.66) 
         allocated_cash = investment_base * (w / 100.0)
         alloc_data.append({"Asset": t, "Target Weight (%)": f"{w:.2f}%", "Capital Deployment": f"₹{allocated_cash:,.2f}"})
     st.table(pd.DataFrame(alloc_data))
