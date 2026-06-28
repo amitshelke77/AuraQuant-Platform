@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-from datetime import datetime
 from textblob import TextBlob
 
 # Configure clean, wide institutional terminal theme
@@ -27,37 +26,40 @@ def get_sentiment_score(ticker):
 def run_production_scanner(tickers, capital_base, max_risk_pct):
     signal_ledger = []
     
-    # Download historical data cleanly without grouping parameters
-    raw_data = yf.download(tickers, start="2025-01-01", group_by='column')
+    # 1. Download raw ticker history cleanly
+    raw_data = yf.download(tickers, start="2025-01-01", auto_adjust=True, progress=False)
     
-    # Explicitly pull close prices across columns
-    if isinstance(raw_data.columns, pd.MultiIndex):
-        if 'Close' in raw_data.columns.levels[0]:
-            data = raw_data['Close'].copy()
-        elif 'Adj Close' in raw_data.columns.levels[0]:
-            data = raw_data['Adj Close'].copy()
-        else:
-            data = raw_data.copy()
-    else:
-        data = raw_data.copy()
-
-    # Create a fresh, single-level dataframe specifically optimized for charting engines
-    chart_clean_df = pd.DataFrame(index=data.index)
-        
+    # 2. Force build an completely flat DataFrame from scratch for charting
+    chart_clean_df = pd.DataFrame(index=raw_data.index)
+    
     for ticker in tickers:
         try:
-            # Handle potential single vs multi-column Series extractions
-            if ticker in data.columns:
-                series = data[ticker]
-                if isinstance(series, pd.DataFrame):
-                    series = series.iloc[:, 0]
-                
-                df_ticker = series.to_frame(name='Price').dropna()
-                chart_clean_df[ticker] = series # Map to clean chart engine dataframe
+            # Safely locate the Close column regardless of yfinance formatting quirks
+            if isinstance(raw_data.columns, pd.MultiIndex):
+                if ('Close', ticker) in raw_data.columns:
+                    series = raw_data[('Close', ticker)]
+                elif (ticker, 'Close') in raw_data.columns:
+                    series = raw_data[(ticker, 'Close')]
+                else:
+                    # Fallback to single level lookup if structure shifted
+                    series = raw_data[ticker] if ticker in raw_data.columns else None
             else:
+                series = raw_data[ticker] if ticker in raw_data.columns else None
+
+            if series is None or series.empty:
                 continue
+                
+            # Flatten to 1D series, drop nulls, force explicit floats
+            if isinstance(series, pd.DataFrame):
+                series = series.iloc[:, 0]
+                
+            series_cleaned = series.dropna().astype(float)
             
-            # 20-Day Bollinger Band Parameters
+            # Map clean isolated data column directly into chart dataframe
+            chart_clean_df[ticker] = series_cleaned
+            
+            # Generate Bollinger Band analysis array
+            df_ticker = pd.DataFrame({'Price': series_cleaned})
             df_ticker['MA'] = df_ticker['Price'].rolling(20).mean()
             df_ticker['STD'] = df_ticker['Price'].rolling(20).std()
             df_ticker['Upper'] = df_ticker['MA'] + (df_ticker['STD'] * 2)
@@ -68,7 +70,7 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
             lower_band = latest['Lower']
             upper_band = latest['Upper']
             
-            # Risk Sizing Math
+            # Risk Sizing Sizing Calculations
             stop_loss = lower_band * 0.98  
             risk_per_share = max(current_price - stop_loss, current_price * 0.02) 
             cash_at_risk = capital_base * (max_risk_pct / 100.0)
@@ -111,7 +113,7 @@ st.markdown("---")
 # SIDEBAR CONTROLS
 # ==========================================
 st.sidebar.header("🕹️ Terminal Control Panel")
-watchlist_input = st.sidebar.text_input("Asset Scan Universe", "RELIANCE.NS, TCS.NS, INFY.NS, SBIN.NS, HDFCBANK.NS, ICICIBANK.NS")
+watchlist_input = st.sidebar.text_input("Asset Scan Universe", "RELIANCE.NS, TCS.NS, INFY.NS, SBIN.NS")
 tickers = [t.strip() for t in watchlist_input.split(",")]
 
 st.sidebar.markdown("---")
@@ -156,7 +158,7 @@ with col1:
     mock_weights = {"RELIANCE.NS": 44.38, "TCS.NS": 26.03, "INFY.NS": 15.62, "SBIN.NS": 13.98}
     alloc_data = []
     for t in tickers:
-        w = mock_weights.get(t, 16.66) 
+        w = mock_weights.get(t, 25.0) 
         allocated_cash = investment_base * (w / 100.0)
         alloc_data.append({"Asset": t, "Target Weight (%)": f"{w:.2f}%", "Capital Deployment": f"₹{allocated_cash:,.2f}"})
     st.table(pd.DataFrame(alloc_data))
@@ -178,9 +180,13 @@ if 'historical_data' in st.session_state and st.session_state['historical_data']
     
     selected_chart_asset = st.selectbox("Select Target Asset Timeline to Plot", tickers)
     
-    if selected_chart_asset in st.session_state['historical_data'].columns:
-        # Pull values explicitly as standard float array to break nested indexing bugs
-        chart_series = st.session_state['historical_data'][selected_chart_asset].dropna()
-        st.line_chart(chart_series)
+    chart_df = st.session_state['historical_data']
+    
+    if selected_chart_asset in chart_df.columns:
+        # Isolate the exact selected column as a simple single-level clean series
+        target_series = chart_df[selected_chart_asset].dropna()
+        
+        # Plot with native Streamlit engine
+        st.line_chart(target_series)
     else:
         st.info("Execute a fresh cross-market scan above to generate visual historical charts.")
