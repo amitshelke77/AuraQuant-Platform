@@ -258,7 +258,6 @@ if st.button("🔄 Execute Fresh Cross-Market Scan") or st.session_state['histor
 st.markdown("---")
 st.header("📰 Live Bloomberg-Style News Desk Terminal")
 
-# UNIQUE KEY FIXED HERE
 selected_news_asset = st.selectbox("Select Asset to Filter Breaking Headline Stream", tickers, key="news_desk_filter_widget")
 
 if selected_news_asset in st.session_state['live_news_stream']:
@@ -289,15 +288,16 @@ if selected_news_asset in st.session_state['live_news_stream']:
             color: #ffffff !important;
         }
         </style>
-    """, unsafe_allowed_html=True)
+    """, unsafe_allow_html=True) # FIXED HERE: Changed 'unsafe_allowed_html' to 'unsafe_allow_html'
 
     for item in news_items:
+        # FIXED HERE: Changed 'unsafe_allowed_html' to 'unsafe_allow_html'
         st.markdown(f"""
         <div class="news-row">
             <span class="news-time">⏱️ {item['Time']}</span> &nbsp;&nbsp;
             <a class="news-link" href="{item['Link']}" target="_blank">{item['Headline']}</a>
         </div>
-        """, unsafe_allowed_html=True)
+        """, unsafe_allow_html=True)
 else:
     st.info("Run a Cross-Market Scan above to sync live breaking news wires.")
 
@@ -309,7 +309,6 @@ st.header("⚡ Live Institutional Order Execution Panel")
 order_col1, order_col2, order_col3 = st.columns(3)
 
 with order_col1:
-    # UNIQUE KEY FIXED HERE
     trade_ticker = st.selectbox("Select Target Asset to Trade", tickers, key="order_routing_asset_selector")
 with order_col2:
     trade_action = st.radio("Order Direction", ["BUY", "SELL"], horizontal=True)
@@ -373,7 +372,6 @@ if st.session_state['historical_data'] is not None:
     st.markdown("---")
     st.header("📈 ML Autoregressive Price Horizon Trends")
     
-    # UNIQUE KEY FIXED HERE
     selected_chart_asset = st.selectbox("Select Target Asset Timeline to Plot", tickers, key="predictive_horizon_chart_selector")
     chart_df = st.session_state['historical_data']
     
