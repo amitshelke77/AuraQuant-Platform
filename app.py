@@ -26,7 +26,7 @@ def get_sentiment_score(ticker):
 
 def run_production_scanner(tickers, capital_base, max_risk_pct):
     signal_ledger = []
-    # Batch download historical closing prices
+    # Batch download historical closing prices for calculation
     data = yf.download(tickers, start="2025-01-01", auto_adjust=True)['Close']
     
     for ticker in tickers:
@@ -49,11 +49,10 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
             
             # Risk Sizing Math
             stop_loss = lower_band * 0.98  # Stop loss set 2% below technical support band
-            risk_per_share = max(current_price - stop_loss, current_price * 0.02) # Prevent zero division
+            risk_per_share = max(current_price - stop_loss, current_price * 0.02) 
             cash_at_risk = capital_base * (max_risk_pct / 100.0)
             calculated_shares = int(cash_at_risk // risk_per_share)
             
-            # Enforce overall capital cap constraints
             if (calculated_shares * current_price) > capital_base:
                 calculated_shares = int(capital_base // current_price)
 
@@ -79,7 +78,7 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
         except:
             pass
             
-    return pd.DataFrame(signal_ledger)
+    return pd.DataFrame(signal_ledger), data
 
 # ==========================================
 # MAIN TERMINAL HEADER
@@ -88,7 +87,7 @@ st.title("📊 AuraQuant Institutional Bloomberg-Clone Terminal")
 st.markdown("---")
 
 # ==========================================
-# SIDEBAR CONTROLS (WITH INTEGRATED RISK ENGINE)
+# SIDEBAR CONTROLS
 # ==========================================
 st.sidebar.header("🕹️ Terminal Control Panel")
 watchlist_input = st.sidebar.text_input("Asset Scan Universe", "RELIANCE.NS, TCS.NS, INFY.NS, SBIN.NS, HDFCBANK.NS, ICICIBANK.NS")
@@ -99,7 +98,6 @@ st.sidebar.subheader("🛡️ Risk Management Parameters")
 investment_base = st.sidebar.number_input("Capital Investment Base (₹)", min_value=10000, value=1000000, step=50000)
 risk_percentage = st.sidebar.slider("Max Account Risk Per Trade (%)", min_value=0.25, max_value=5.0, value=1.0, step=0.25)
 
-# Calculate active dollar value of selected exposure
 total_risk_exposure = investment_base * (risk_percentage / 100.0)
 st.sidebar.info(f"💼 Risk Threshold per Asset: ₹{total_risk_exposure:,.2f}")
 
@@ -108,11 +106,16 @@ st.sidebar.info(f"💼 Risk Threshold per Asset: ₹{total_risk_exposure:,.2f}")
 # ==========================================
 st.header("🔍 Real-Time Multi-Asset Scanner & Alpha Intelligence")
 
+# Global placeholder initialization for charts to read safely
+historical_data = None
+
 if st.button("🔄 Execute Fresh Cross-Market Scan"):
     with st.spinner("Processing multi-asset risk bands & calculation models..."):
-        ledger_df = run_production_scanner(tickers, investment_base, risk_percentage)
+        ledger_df, historical_data = run_production_scanner(tickers, investment_base, risk_percentage)
         
-        # Pull high conviction breakouts instantly
+        # Save historical price table data in current session state to keep it persistent for charts
+        st.session_state['historical_data'] = historical_data
+        
         actionable = ledger_df[ledger_df['Signal Matrix'] != "⚪ HOLD (No Signal)"]
         
         if not actionable.empty:
@@ -148,3 +151,19 @@ with col2:
         {"Crisis Vector": "2008 Financial Meltdown", "Drop": "-52.0%", "Impact": f"₹-{investment_base * 0.52:,.2f}"}
     ]
     st.table(pd.DataFrame(crisis_scenarios))
+
+# ==========================================
+# CORE COMPONENT 3: HISTORICAL INTERACTIVE VISUALIZATION
+# ==========================================
+if 'historical_data' in st.session_state and st.session_state['historical_data'] is not None:
+    st.markdown("---")
+    st.header("📈 Institutional Multi-Asset Price Intelligence Trends")
+    
+    # Dropdown menu to filter data views smoothly
+    selected_chart_asset = st.selectbox("Select Target Asset Timeline to Plot", tickers)
+    
+    if selected_chart_asset in st.session_state['historical_data'].columns:
+        chart_df = st.session_state['historical_data'][selected_chart_asset].dropna()
+        st.line_chart(chart_df)
+    else:
+        st.info("Execute a fresh cross-market scan above to generate visual historical charts.")
