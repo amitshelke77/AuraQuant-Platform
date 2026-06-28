@@ -117,6 +117,11 @@ risk_percentage = st.sidebar.slider("Max Account Risk Per Trade (%)", min_value=
 total_risk_exposure = investment_base * (risk_percentage / 100.0)
 st.sidebar.info(f"💼 Risk Threshold per Asset: ₹{total_risk_exposure:,.2f}")
 
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔮 Predictive Chart Tuner")
+chart_lookback_days = st.sidebar.slider("Historical View Window (Days)", min_value=15, max_value=180, value=60, step=5)
+future_horizon_days = st.sidebar.slider("Forecast Target Window (Days)", min_value=7, max_value=90, value=30, step=1)
+
 # ==========================================
 # CORE COMPONENT 1: LIVE ENGINE SCANNER
 # ==========================================
@@ -174,19 +179,20 @@ if 'historical_data' in st.session_state and st.session_state['historical_data']
     
     if selected_chart_asset in chart_df.columns:
         clean_history = chart_df[[selected_chart_asset]].dropna()
+        
+        # Crop history to the user's selected lookback preference for a clear visual window
+        clean_history = clean_history.tail(chart_lookback_days)
+        
         historical_prices = clean_history[selected_chart_asset].values
         historical_dates = pd.to_datetime(clean_history.index)
         
-        # Linear Regression Math (Last 30 points)
-        lookback = min(30, len(historical_prices))
-        y_train = historical_prices[-lookback:]
+        # Linear Regression Math (Fitted to the lookback window)
+        lookback = len(historical_prices)
         x_train = np.arange(lookback)
+        A = np.vstack([x_train, np.ones(lookback)]).T
+        m, c = np.linalg.lstsq(A, historical_prices, rcond=None)[0]
         
-        A = np.vstack([x_train, np.ones(len(x_train))]).T
-        m, c = np.linalg.lstsq(A, y_train, rcond=None)[0]
-        
-        # Generate 14 days of future dates
-        future_horizon_days = 14
+        # Generate custom future calendar dates
         last_date = historical_dates[-1]
         future_dates = [last_date + timedelta(days=i) for i in range(1, future_horizon_days + 1)]
         
@@ -194,28 +200,43 @@ if 'historical_data' in st.session_state and st.session_state['historical_data']
         future_x = np.arange(lookback, lookback + future_horizon_days)
         future_predictions = m * future_x + c
         
-        # Create a single unified Dataframe containing all dates
+        # Standard deviation volatility for predictive error bands
+        volatility_std = np.std(historical_prices) if len(historical_prices) > 1 else 1.0
+        
+        # Assemble master chart array mapping
         all_dates = list(historical_dates) + future_dates
         all_date_strings = [d.strftime('%Y-%m-%d') for d in all_dates]
         
         plot_df = pd.DataFrame(index=all_date_strings)
         
-        # Map historical prices (Leaves future dates as empty/NaN)
-        hist_series = pd.Series(historical_prices, index=[d.strftime('%Y-%m-%d') for d in historical_dates])
-        plot_df['Historical Price'] = hist_series
+        # Map past history
+        plot_df['Historical Price'] = pd.Series(historical_prices, index=[d.strftime('%Y-%m-%d') for d in historical_dates])
         
-        # Create a complete forecast line matching the full historical length
-        # This keeps the lines unbroken and properly colored in Streamlit
+        # Connect forecast line seamlessly from final close index position
         forecast_array = np.full(len(all_dates), np.nan)
-        forecast_array[len(historical_prices) - 1] = historical_prices[-1] # Bridge point
+        forecast_array[len(historical_prices) - 1] = historical_prices[-1]
         forecast_array[len(historical_prices):] = future_predictions
+        plot_df['Expected Path Prediction'] = forecast_array
         
-        plot_df['Forecasted Trend'] = forecast_array
+        # Create lower/upper threshold risk corridors
+        upper_corridor = np.full(len(all_dates), np.nan)
+        lower_corridor = np.full(len(all_dates), np.nan)
         
-        # Reset and clean index
-        plot_ready_df = plot_df.reset_index().rename(columns={'index': 'Date'}).dropna(how='all', subset=['Historical Price', 'Forecasted Trend'])
+        upper_corridor[len(historical_prices) - 1] = historical_prices[-1]
+        lower_corridor[len(historical_prices) - 1] = historical_prices[-1]
         
-        # Render clean, explicit charting columns
-        st.line_chart(data=plot_ready_df, x='Date', y=['Historical Price', 'Forecasted Trend'])
+        # Fan out error bands based on distance time variance
+        for idx in range(future_horizon_days):
+            time_factor = np.sqrt(idx + 1) * 0.35
+            upper_corridor[len(historical_prices) + idx] = future_predictions[idx] + (volatility_std * time_factor)
+            lower_corridor[len(historical_prices) + idx] = future_predictions[idx] - (volatility_std * time_factor)
+            
+        plot_df['Target Ceiling Boundary'] = upper_corridor
+        plot_df['Target Floor Boundary'] = lower_corridor
+        
+        plot_ready_df = plot_df.reset_index().rename(columns={'index': 'Date'})
+        
+        # Draw complete institutional forecasting corridor
+        st.line_chart(data=plot_ready_df, x='Date', y=['Historical Price', 'Expected Path Prediction', 'Target Ceiling Boundary', 'Target Floor Boundary'])
     else:
         st.info("Execute a fresh cross-market scan above to generate visual historical charts.")
