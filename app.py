@@ -4,6 +4,7 @@ import numpy as np
 import yfinance as yf
 from textblob import TextBlob
 from datetime import datetime, timedelta
+import plotly.graph_objects as go
 
 # Configure clean, wide institutional terminal theme
 st.set_page_config(page_title="AuraQuant Trader Terminal", layout="wide")
@@ -12,7 +13,7 @@ st.set_page_config(page_title="AuraQuant Trader Terminal", layout="wide")
 # INITIALIZE LIVE SESSION STATE LEDGERS
 # ==========================================
 if 'portfolio' not in st.session_state:
-    st.session_state['portfolio'] = {}  # Format: { ticker: {"shares": X, "avg_price": Y} }
+    st.session_state['portfolio'] = {}
 if 'trade_history' not in st.session_state:
     st.session_state['trade_history'] = []
 if 'historical_data' not in st.session_state:
@@ -143,8 +144,7 @@ future_horizon_days = st.sidebar.slider("Forecast Target Window (Days)", min_val
 st.header("🔍 Real-Time Multi-Asset Scanner & Alpha Intelligence")
 
 if st.button("🔄 Execute Fresh Cross-Market Scan") or st.session_state['historical_data'] is not None:
-    # Only pull fresh details if explicitly clicked or data hasn't been compiled yet
-    if st.session_state['historical_data'] is None or st.sidebar.button("Force Re-download"):
+    if st.session_state['historical_data'] is None:
         with st.spinner("Processing multi-asset risk bands & calculation models..."):
             ledger_df, historical_data = run_production_scanner(tickers, investment_base, risk_percentage)
             st.session_state['historical_data'] = historical_data
@@ -161,7 +161,7 @@ if st.button("🔄 Execute Fresh Cross-Market Scan") or st.session_state['histor
     st.table(ledger_df)
 
 # ==========================================
-# NEW FEATURE: SIMULATED ORDER EXECUTION DESK
+# SIMULATED ORDER EXECUTION DESK
 # ==========================================
 st.markdown("---")
 st.header("⚡ Live Institutional Order Execution Panel")
@@ -180,7 +180,6 @@ if st.button("🚀 Transmit Order Payload"):
     if current_market_price is None:
         st.error("Please execute a cross-market scan above to fetch current asset prices first.")
     else:
-        # Business logic rules for trade processing
         if trade_action == "BUY":
             current_holding = st.session_state['portfolio'].get(trade_ticker, {"shares": 0, "avg_price": 0.0})
             total_shares = current_holding["shares"] + trade_shares
@@ -202,9 +201,6 @@ if st.button("🚀 Transmit Order Payload"):
                     st.session_state['portfolio'][trade_ticker]["shares"] = total_shares
                 st.success(f"Execution Successful: Sold {trade_shares} of {trade_ticker} at ₹{current_market_price:,.2f}")
 
-# ==========================================
-# NEW FEATURE: PORTFOLIO LEDGER DASHBOARD
-# ==========================================
 if st.session_state['portfolio']:
     st.subheader("💼 Active Simulated Portfolio Positions")
     positions_summary = []
@@ -229,7 +225,7 @@ if st.session_state['portfolio']:
     st.table(pd.DataFrame(positions_summary))
 
 # ==========================================
-# CORE COMPONENT 2: PORTFOLIO ALLOCATION MATRIX
+# PORTFOLIO ALLOCATION MATRIX
 # ==========================================
 st.markdown("---")
 st.header("🎯 Advanced Portfolio Allocation Matrix")
@@ -254,7 +250,7 @@ with col2:
     st.table(pd.DataFrame(crisis_scenarios))
 
 # ==========================================
-# CORE COMPONENT 3: HISTORICAL & FORECAST VISUALIZATION
+# INTERACTIVE PLOTLY HORIZON VISUALIZATION
 # ==========================================
 if st.session_state['historical_data'] is not None:
     st.markdown("---")
@@ -270,7 +266,7 @@ if st.session_state['historical_data'] is not None:
         historical_prices = clean_history[selected_chart_asset].values
         historical_dates = pd.to_datetime(clean_history.index)
         
-        # Linear Regression Math
+        # Linear Regression Calculations
         lookback = len(historical_prices)
         x_train = np.arange(lookback)
         A = np.vstack([x_train, np.ones(lookback)]).T
@@ -278,35 +274,67 @@ if st.session_state['historical_data'] is not None:
         
         last_date = historical_dates[-1]
         future_dates = [last_date + timedelta(days=i) for i in range(1, future_horizon_days + 1)]
-        
         future_x = np.arange(lookback, lookback + future_horizon_days)
         future_predictions = m * future_x + c
         
         volatility_std = np.std(historical_prices) if len(historical_prices) > 1 else 1.0
         
+        # Build unified arrays
         all_dates = list(historical_dates) + future_dates
-        all_date_strings = [d.strftime('%Y-%m-%d') for d in all_dates]
         
-        plot_df = pd.DataFrame(index=all_date_strings)
-        plot_df['Historical Price'] = pd.Series(historical_prices, index=[d.strftime('%Y-%m-%d') for d in historical_dates])
+        # Generate Plotly traces
+        fig = go.Figure()
         
-        forecast_array = np.full(len(all_dates), np.nan)
-        forecast_array[len(historical_prices) - 1] = historical_prices[-1]
-        forecast_array[len(historical_prices):] = future_predictions
-        plot_df['Expected Path Prediction'] = forecast_array
+        # Trace 1: Historical Prices
+        fig.add_trace(go.Scatter(
+            x=historical_dates, y=historical_prices,
+            mode='lines', name='Historical Price',
+            line=dict(color='#1f77b4', width=2.5)
+        ))
         
-        upper_corridor = np.full(len(all_dates), np.nan)
-        lower_corridor = np.full(len(all_dates), np.nan)
-        upper_corridor[len(historical_prices) - 1] = historical_prices[-1]
-        lower_corridor[len(historical_prices) - 1] = historical_prices[-1]
+        # Trace 2: Predicted Path
+        pred_x = [historical_dates[-1]] + future_dates
+        pred_y = [historical_prices[-1]] + list(future_predictions)
+        fig.add_trace(go.Scatter(
+            x=pred_x, y=pred_y,
+            mode='lines', name='Expected Path Prediction',
+            line=dict(color='#ff7f0e', width=2, dash='dash')
+        ))
         
+        # Trace 3 & 4: Volatility Risk Boundaries
+        upper_y = [historical_prices[-1]]
+        lower_y = [historical_prices[-1]]
         for idx in range(future_horizon_days):
             time_factor = np.sqrt(idx + 1) * 0.35
-            upper_corridor[len(historical_prices) + idx] = future_predictions[idx] + (volatility_std * time_factor)
-            lower_corridor[len(historical_prices) + idx] = future_predictions[idx] - (volatility_std * time_factor)
+            upper_y.append(future_predictions[idx] + (volatility_std * time_factor))
+            lower_y.append(future_predictions[idx] - (volatility_std * time_factor))
             
-        plot_df['Target Ceiling Boundary'] = upper_corridor
-        plot_df['Target Floor Boundary'] = lower_corridor
+        fig.add_trace(go.Scatter(
+            x=pred_x, y=upper_y,
+            mode='lines', name='Target Ceiling Boundary',
+            line=dict(color='#2ca02c', width=1, dash='dot')
+        ))
+        fig.add_trace(go.Scatter(
+            x=pred_x, y=lower_y,
+            mode='lines', name='Target Floor Boundary',
+            line=dict(color='#d62728', width=1, dash='dot')
+        ))
         
-        plot_ready_df = plot_df.reset_index().rename(columns={'index': 'Date'})
-        st.line_chart(data=plot_ready_df, x='Date', y=['Historical Price', 'Expected Path Prediction', 'Target Ceiling Boundary', 'Target Floor Boundary'])
+        # Apply dark theme styling matching Bloomberg setup
+        fig.update_layout(
+            template='plotly_dark',
+            margin=dict(l=40, r=40, t=20, b=40),
+            height=500,
+            hovermode='x unified',
+            xaxis=dict(
+                showgrid=True, gridcolor='#333333',
+                tickformat='%b %d, %Y',  # Force clean legible date strings
+                nticks=12
+            ),
+            yaxis=dict(showgrid=True, gridcolor='#333333', title="Price (₹)"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Execute a fresh cross-market scan above to generate visual historical charts.")
