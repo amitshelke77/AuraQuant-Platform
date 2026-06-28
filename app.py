@@ -55,7 +55,9 @@ def fetch_live_news_and_sentiment(ticker):
                 })
         
         if not headlines:
-            return "Neutral (No Feed Flow)", 0.0, [{"Headline": "No active breaking stories found for this asset class.", "Link": "#", "Time": "N/A"}]
+            fallback_msg = [{"Headline": "No active breaking stories found for this asset class.", "Link": "#", "Time": "N/A"}]
+            st.session_state['live_news_stream'][ticker] = fallback_msg
+            return "Neutral (No Feed Flow)", 0.0, fallback_msg
             
         # Analyze top 5 breaking headlines
         total_polarity = 0.0
@@ -72,7 +74,9 @@ def fetch_live_news_and_sentiment(ticker):
         return f"⚪ Neutral ({avg_polarity:+.2f})", avg_polarity, headlines
         
     except Exception as e:
-        return "⚪ Neutral (Timeout)", 0.0, [{"Headline": f"Connection delayed: {str(e)}", "Link": "#", "Time": "N/A"}]
+        fallback_err = [{"Headline": f"Connection delayed: {str(e)}", "Link": "#", "Time": "N/A"}]
+        st.session_state['live_news_stream'][ticker] = fallback_err
+        return "⚪ Neutral (Timeout)", 0.0, fallback_err
 
 # ==========================================
 # STATIONARY ADVANCED ML CORE ENGINE
@@ -149,9 +153,27 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
     prices_map = {}
     
     for ticker in tickers:
+        # Pre-initialize stream to protect layout states
+        if ticker not in st.session_state['live_news_stream']:
+            st.session_state['live_news_stream'][ticker] = [
+                {"Headline": "Syncing live breaking wires...", "Link": "#", "Time": "Recent"}
+            ]
+            
         try:
+            # Run background news sync completely outside of yfinance dependencies
+            sentiment_label, _, _ = fetch_live_news_and_sentiment(ticker)
+            
             raw_ticker = yf.download(ticker, start="2025-01-01", progress=False)
             if raw_ticker.empty:
+                signal_ledger.append({
+                    "Asset Universe": ticker,
+                    "Live Value (₹)": 0.0,
+                    "Real-time News Sentiment": sentiment_label,
+                    "Support Band": 0.0,
+                    "Resistance Band": 0.0,
+                    "Algorithmic Action": "⚠️ connection delayed",
+                    "Risk Target Sizing": "0"
+                })
                 continue
                 
             if isinstance(raw_ticker.columns, pd.MultiIndex):
@@ -178,9 +200,6 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
             upper_band = float(latest['Upper'])
             
             prices_map[ticker] = current_price
-            
-            # Execute news parser
-            sentiment_label, _, _ = fetch_live_news_and_sentiment(ticker)
             
             stop_loss = lower_band * 0.98  
             risk_per_share = max(current_price - stop_loss, current_price * 0.02) 
@@ -288,10 +307,9 @@ if selected_news_asset in st.session_state['live_news_stream']:
             color: #ffffff !important;
         }
         </style>
-    """, unsafe_allow_html=True) # FIXED HERE: Changed 'unsafe_allowed_html' to 'unsafe_allow_html'
+    """, unsafe_allow_html=True)
 
     for item in news_items:
-        # FIXED HERE: Changed 'unsafe_allowed_html' to 'unsafe_allow_html'
         st.markdown(f"""
         <div class="news-row">
             <span class="news-time">⏱️ {item['Time']}</span> &nbsp;&nbsp;
