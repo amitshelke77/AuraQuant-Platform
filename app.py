@@ -25,37 +25,25 @@ def get_sentiment_score(ticker):
 
 def run_production_scanner(tickers, capital_base, max_risk_pct):
     signal_ledger = []
-    
-    # 1. Download raw ticker history cleanly
-    raw_data = yf.download(tickers, start="2025-01-01", auto_adjust=True, progress=False)
-    
-    # 2. Force build an completely flat DataFrame from scratch for charting
-    chart_clean_df = pd.DataFrame(index=raw_data.index)
+    chart_clean_df = pd.DataFrame()
     
     for ticker in tickers:
         try:
-            # Safely locate the Close column regardless of yfinance formatting quirks
-            if isinstance(raw_data.columns, pd.MultiIndex):
-                if ('Close', ticker) in raw_data.columns:
-                    series = raw_data[('Close', ticker)]
-                elif (ticker, 'Close') in raw_data.columns:
-                    series = raw_data[(ticker, 'Close')]
-                else:
-                    # Fallback to single level lookup if structure shifted
-                    series = raw_data[ticker] if ticker in raw_data.columns else None
-            else:
-                series = raw_data[ticker] if ticker in raw_data.columns else None
-
-            if series is None or series.empty:
+            # Download individual ticker data to guarantee a single-level clean DataFrame
+            raw_ticker = yf.download(ticker, start="2025-01-01", progress=False)
+            if raw_ticker.empty:
                 continue
                 
-            # Flatten to 1D series, drop nulls, force explicit floats
-            if isinstance(series, pd.DataFrame):
-                series = series.iloc[:, 0]
-                
-            series_cleaned = series.dropna().astype(float)
+            # Isolate the Close price safely (handling any potential single-column flattening)
+            if 'Close' in raw_ticker.columns:
+                series_cleaned = raw_ticker['Close'].dropna()
+            else:
+                series_cleaned = raw_ticker.iloc[:, 0].dropna()
             
-            # Map clean isolated data column directly into chart dataframe
+            # Convert series values explicitly to native float arrays to ensure chart compatibility
+            series_cleaned = pd.Series(series_cleaned.values.flatten(), index=series_cleaned.index, name=ticker).astype(float)
+            
+            # Map clean isolated data column directly into master chart dataframe
             chart_clean_df[ticker] = series_cleaned
             
             # Generate Bollinger Band analysis array
@@ -66,11 +54,11 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
             df_ticker['Lower'] = df_ticker['MA'] - (df_ticker['STD'] * 2)
             
             latest = df_ticker.iloc[-1]
-            current_price = latest['Price']
-            lower_band = latest['Lower']
-            upper_band = latest['Upper']
+            current_price = float(latest['Price'])
+            lower_band = float(latest['Lower'])
+            upper_band = float(latest['Upper'])
             
-            # Risk Sizing Sizing Calculations
+            # Risk Sizing Calculations
             stop_loss = lower_band * 0.98  
             risk_per_share = max(current_price - stop_loss, current_price * 0.02) 
             cash_at_risk = capital_base * (max_risk_pct / 100.0)
@@ -98,7 +86,7 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
                 "Signal Matrix": action,
                 "Recommended Sizing": suggested_sizing
             })
-        except:
+        except Exception as e:
             pass
             
     return pd.DataFrame(signal_ledger), chart_clean_df
@@ -179,14 +167,11 @@ if 'historical_data' in st.session_state and st.session_state['historical_data']
     st.header("📈 Institutional Multi-Asset Price Intelligence Trends")
     
     selected_chart_asset = st.selectbox("Select Target Asset Timeline to Plot", tickers)
-    
     chart_df = st.session_state['historical_data']
     
     if selected_chart_asset in chart_df.columns:
-        # Isolate the exact selected column as a simple single-level clean series
+        # Pull single column, drop na, and plot cleanly
         target_series = chart_df[selected_chart_asset].dropna()
-        
-        # Plot with native Streamlit engine
         st.line_chart(target_series)
     else:
         st.info("Execute a fresh cross-market scan above to generate visual historical charts.")
