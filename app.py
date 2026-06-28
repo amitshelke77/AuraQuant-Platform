@@ -29,25 +29,33 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
     
     for ticker in tickers:
         try:
-            # Download individual ticker data to guarantee a single-level clean DataFrame
+            # Download individual ticker data
             raw_ticker = yf.download(ticker, start="2025-01-01", progress=False)
             if raw_ticker.empty:
                 continue
                 
-            # Isolate the Close price safely (handling any potential single-column flattening)
+            # Flatten out any nested columns automatically
+            if isinstance(raw_ticker.columns, pd.MultiIndex):
+                raw_ticker.columns = raw_ticker.columns.get_level_values(-1)
+            
             if 'Close' in raw_ticker.columns:
                 series_cleaned = raw_ticker['Close'].dropna()
             else:
                 series_cleaned = raw_ticker.iloc[:, 0].dropna()
             
-            # Convert series values explicitly to native float arrays to ensure chart compatibility
-            series_cleaned = pd.Series(series_cleaned.values.flatten(), index=series_cleaned.index, name=ticker).astype(float)
+            # Extract raw values as a perfectly flat 1D array of floats
+            flat_prices = series_cleaned.values.flatten().astype(float)
             
-            # Map clean isolated data column directly into master chart dataframe
-            chart_clean_df[ticker] = series_cleaned
+            # Align into the tracking dataframe using a clean string date index format
+            date_strings = series_cleaned.index.strftime('%Y-%m-%d')
             
-            # Generate Bollinger Band analysis array
-            df_ticker = pd.DataFrame({'Price': series_cleaned})
+            if chart_clean_df.empty:
+                chart_clean_df = pd.DataFrame(index=date_strings)
+                
+            chart_clean_df[ticker] = pd.Series(flat_prices, index=date_strings)
+            
+            # Generate Bollinger Band metrics
+            df_ticker = pd.DataFrame({'Price': flat_prices}, index=series_cleaned.index)
             df_ticker['MA'] = df_ticker['Price'].rolling(20).mean()
             df_ticker['STD'] = df_ticker['Price'].rolling(20).std()
             df_ticker['Upper'] = df_ticker['MA'] + (df_ticker['STD'] * 2)
@@ -58,7 +66,7 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
             lower_band = float(latest['Lower'])
             upper_band = float(latest['Upper'])
             
-            # Risk Sizing Calculations
+            # Risk Sizing Math
             stop_loss = lower_band * 0.98  
             risk_per_share = max(current_price - stop_loss, current_price * 0.02) 
             cash_at_risk = capital_base * (max_risk_pct / 100.0)
@@ -86,7 +94,7 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
                 "Signal Matrix": action,
                 "Recommended Sizing": suggested_sizing
             })
-        except Exception as e:
+        except:
             pass
             
     return pd.DataFrame(signal_ledger), chart_clean_df
@@ -120,11 +128,9 @@ st.header("🔍 Real-Time Multi-Asset Scanner & Alpha Intelligence")
 if st.button("🔄 Execute Fresh Cross-Market Scan"):
     with st.spinner("Processing multi-asset risk bands & calculation models..."):
         ledger_df, historical_data = run_production_scanner(tickers, investment_base, risk_percentage)
-        
         st.session_state['historical_data'] = historical_data
         
         actionable = ledger_df[ledger_df['Signal Matrix'] != "⚪ HOLD (No Signal)"]
-        
         if not actionable.empty:
             st.warning("⚠️ CRITICAL REVERSION SIGNALS DETECTED - RISK ALLOCATION ACTIVE")
             st.table(actionable[["Asset", "Current Price", "Signal Matrix", "Recommended Sizing"]])
@@ -170,8 +176,11 @@ if 'historical_data' in st.session_state and st.session_state['historical_data']
     chart_df = st.session_state['historical_data']
     
     if selected_chart_asset in chart_df.columns:
-        # Pull single column, drop na, and plot cleanly
-        target_series = chart_df[selected_chart_asset].dropna()
-        st.line_chart(target_series)
+        # Flatten into a fresh simple DataFrame with explicit named columns
+        plot_ready_df = chart_df[[selected_chart_asset]].dropna().reset_index()
+        plot_ready_df.columns = ['Date', 'Price']
+        
+        # Enforce explicit x and y tracking fields to bypass index parsing bugs
+        st.line_chart(data=plot_ready_df, x='Date', y='Price')
     else:
         st.info("Execute a fresh cross-market scan above to generate visual historical charts.")
