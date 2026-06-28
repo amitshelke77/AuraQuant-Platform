@@ -11,7 +11,7 @@ from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
 
 # Configure clean, wide institutional terminal theme
-st.set_page_config(page_title="AuraQuant AI Terminal Core", layout="wide")
+st.set_page_config(page_title="AuraQuant Institutional Intelligence Terminal", layout="wide")
 
 # ==========================================
 # INITIALIZE LIVE SESSION STATE LEDGERS
@@ -254,20 +254,50 @@ if st.button("🔄 Execute Fresh Cross-Market Scan") or st.session_state['histor
     st.table(ledger_df)
 
 # ==========================================
-# NEW COMPONENT: THE BLOOMBERG NEWS SECTION
+# COMPONENT 2: THE BLOOMBERG NEWS SECTION
 # ==========================================
 st.markdown("---")
 st.header("📰 Live Bloomberg-Style News Desk Terminal")
-selected_news_asset = st.selectbox("Select Asset to Filter Breaking Headline Stream", tickers)
+selected_news_asset = st.selectbox("Select Asset to Filter Breaking Headline Stream", tickers, key="news_desk_filter")
 
 if selected_news_asset in st.session_state['live_news_stream']:
     news_items = st.session_state['live_news_stream'][selected_news_asset]
+    
+    # Inject styling to make custom containers look like Bloomberg rows
+    st.markdown("""
+        <style>
+        .news-row {
+            padding: 12px;
+            border-bottom: 1px solid #222222;
+            transition: background-color 0.2s;
+        }
+        .news-row:hover {
+            background-color: #111520;
+        }
+        .news-time {
+            color: #ffaa00;
+            font-family: monospace;
+            font-size: 13px;
+        }
+        .news-link {
+            color: #00bfff !important;
+            text-decoration: none !important;
+            font-weight: 600;
+        }
+        .news-link:hover {
+            text-decoration: underline !important;
+            color: #ffffff !important;
+        }
+        </style>
+    """, unsafe_allowed_html=True)
+
     for item in news_items:
-        col_time, col_headline = st.columns([1, 5])
-        with col_time:
-            st.caption(f"⏱️ {item['Time']}")
-        with col_headline:
-            st.markdown(f"**[{item['Headline']}]({item['Link']})**")
+        st.markdown(f"""
+        <div class="news-row">
+            <span class="news-time">⏱️ {item['Time']}</span> &nbsp;&nbsp;
+            <a class="news-link" href="{item['Link']}" target="_blank">{item['Headline']}</a>
+        </div>
+        """, unsafe_allowed_html=True)
 else:
     st.info("Run a Cross-Market Scan above to sync live breaking news wires.")
 
