@@ -153,14 +153,8 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
     prices_map = {}
     
     for ticker in tickers:
-        # Pre-initialize stream to protect layout states
-        if ticker not in st.session_state['live_news_stream']:
-            st.session_state['live_news_stream'][ticker] = [
-                {"Headline": "Syncing live breaking wires...", "Link": "#", "Time": "Recent"}
-            ]
-            
         try:
-            # Run background news sync completely outside of yfinance dependencies
+            # Force background news sync first to guarantee session caching
             sentiment_label, _, _ = fetch_live_news_and_sentiment(ticker)
             
             raw_ticker = yf.download(ticker, start="2025-01-01", progress=False)
@@ -259,17 +253,17 @@ future_horizon_days = st.sidebar.slider("AI ML Forecast Horizon (Days)", min_val
 # ==========================================
 st.header("🔍 Real-Time Multi-Asset Scanner & Machine Learning Intelligence")
 
-if st.button("🔄 Execute Fresh Cross-Market Scan") or st.session_state['historical_data'] is not None:
-    if st.session_state['historical_data'] is None:
-        with st.spinner("Compiling stationary return feature matrix..."):
-            ledger_df, historical_data = run_production_scanner(tickers, investment_base, risk_percentage)
-            st.session_state['historical_data'] = historical_data
-            st.session_state['ledger_df'] = ledger_df
-    else:
-        ledger_df = st.session_state['ledger_df']
+# Trigger scan parsing execution
+if st.button("🔄 Execute Fresh Cross-Market Scan"):
+    with st.spinner("Compiling stationary return feature matrix..."):
+        ledger_df, historical_data = run_production_scanner(tickers, investment_base, risk_percentage)
+        st.session_state['historical_data'] = historical_data
+        st.session_state['ledger_df'] = ledger_df
 
+# Persistently show data frame metrics once loaded
+if st.session_state['ledger_df'] is not None:
     st.subheader("📋 Core Intelligence Data Streams")
-    st.table(ledger_df)
+    st.table(st.session_state['ledger_df'])
 
 # ==========================================
 # COMPONENT 2: THE NATIVE STREAMLIT NEWS DESK
@@ -279,21 +273,20 @@ st.header("📰 Live Bloomberg-Style News Desk Terminal")
 
 selected_news_asset = st.selectbox("Select Asset to Filter Breaking Headline Stream", tickers, key="news_desk_filter_widget")
 
-if selected_news_asset in st.session_state['live_news_stream']:
-    news_items = st.session_state['live_news_stream'][selected_news_asset]
-    
-    # Handle clean native layouts for fallbacks or actual headlines
-    if len(news_items) == 1 and "No active breaking stories" in news_items[0]['Headline']:
-        st.info("No active breaking stories found for this asset class.")
-    else:
-        for item in news_items:
-            # Use columns to mimic an institutional wire feed line
-            time_col, text_col = st.columns([1, 6])
-            with time_col:
-                st.caption(f"⏱️ {item['Time']}")
-            with text_col:
-                # Native markdown link rendering (highly stable, color inherited from theme)
-                st.markdown(f"[{item['Headline']}]({item['Link']})")
+# Check if cache holds information, if empty do a quick target sync on demand
+if selected_news_asset not in st.session_state['live_news_stream']:
+    with st.spinner(f"Fetching real-time updates for {selected_news_asset}..."):
+        fetch_live_news_and_sentiment(selected_news_asset)
+
+news_items = st.session_state['live_news_stream'].get(selected_news_asset, [])
+
+if news_items:
+    for item in news_items:
+        time_col, text_col = st.columns([1, 6])
+        with time_col:
+            st.caption(f"⏱️ {item['Time']}")
+        with text_col:
+            st.markdown(f"[{item['Headline']}]({item['Link']})")
 else:
     st.info("Run a Cross-Market Scan above to sync live breaking news wires.")
 
