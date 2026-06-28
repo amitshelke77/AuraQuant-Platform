@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 from textblob import TextBlob
+from datetime import datetime, timedelta
 
 # Configure clean, wide institutional terminal theme
 st.set_page_config(page_title="AuraQuant Trader Terminal", layout="wide")
@@ -34,7 +35,6 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
             if raw_ticker.empty:
                 continue
                 
-            # Flatten out any nested columns automatically
             if isinstance(raw_ticker.columns, pd.MultiIndex):
                 raw_ticker.columns = raw_ticker.columns.get_level_values(-1)
             
@@ -43,10 +43,7 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
             else:
                 series_cleaned = raw_ticker.iloc[:, 0].dropna()
             
-            # Extract raw values as a perfectly flat 1D array of floats
             flat_prices = series_cleaned.values.flatten().astype(float)
-            
-            # Align into the tracking dataframe using a clean string date index format
             date_strings = series_cleaned.index.strftime('%Y-%m-%d')
             
             if chart_clean_df.empty:
@@ -166,21 +163,56 @@ with col2:
     st.table(pd.DataFrame(crisis_scenarios))
 
 # ==========================================
-# CORE COMPONENT 3: HISTORICAL INTERACTIVE VISUALIZATION
+# CORE COMPONENT 3: HISTORICAL & FORECAST INTERACTIVE VISUALIZATION
 # ==========================================
 if 'historical_data' in st.session_state and st.session_state['historical_data'] is not None:
     st.markdown("---")
-    st.header("📈 Institutional Multi-Asset Price Intelligence Trends")
+    st.header("📈 Predictive Multi-Asset Price Horizon Trends")
     
     selected_chart_asset = st.selectbox("Select Target Asset Timeline to Plot", tickers)
     chart_df = st.session_state['historical_data']
     
     if selected_chart_asset in chart_df.columns:
-        # Flatten into a fresh simple DataFrame with explicit named columns
-        plot_ready_df = chart_df[[selected_chart_asset]].dropna().reset_index()
-        plot_ready_df.columns = ['Date', 'Price']
+        # 1. Clean up historical values
+        clean_history = chart_df[[selected_chart_asset]].dropna()
+        historical_prices = clean_history[selected_chart_asset].values
+        historical_dates = pd.to_datetime(clean_history.index)
         
-        # Enforce explicit x and y tracking fields to bypass index parsing bugs
-        st.line_chart(data=plot_ready_df, x='Date', y='Price')
+        # 2. Fit a Linear Regression line to the last 30 training points
+        lookback = min(30, len(historical_prices))
+        y_train = historical_prices[-lookback:]
+        x_train = np.arange(lookback)
+        
+        # Matrix Math for least squares fit: y = mx + c
+        A = np.vstack([x_train, np.ones(len(x_train))]).T
+        m, c = np.linalg.lstsq(A, y_train, rcond=None)[0]
+        
+        # 3. Project 14 calendar days forward into the future horizon
+        future_horizon_days = 14
+        last_date = historical_dates[-1]
+        
+        future_dates = [last_date + timedelta(days=i) for i in range(1, future_horizon_days + 1)]
+        future_x = np.arange(lookback, lookback + future_horizon_days)
+        future_predictions = m * future_x + c
+        
+        # 4. Construct a unified prediction mapping dataframe
+        all_dates = list(historical_dates) + future_dates
+        all_date_strings = [d.strftime('%Y-%m-%d') for d in all_dates]
+        
+        plot_df = pd.DataFrame(index=all_date_strings)
+        
+        # Map historical line values (Leaves future blank so it doesn't drop to 0)
+        plot_df['Historical Price'] = pd.Series(historical_prices, index=[d.strftime('%Y-%m-%d') for d in historical_dates])
+        
+        # Map predictive line values (Starts at the last historical point to keep the line connected)
+        forecast_series_values = [historical_prices[-1]] + list(future_predictions)
+        forecast_series_dates = [historical_dates[-1]] + future_dates
+        plot_df['Forecasted Trend'] = pd.Series(forecast_series_values, index=[d.strftime('%Y-%m-%d') for d in forecast_series_dates])
+        
+        # Reset index to string for flawless axis presentation
+        plot_ready_df = plot_df.reset_index().rename(columns={'index': 'Date'})
+        
+        # Render both tracking lines simultaneously
+        st.line_chart(data=plot_ready_df, x='Date', y=['Historical Price', 'Forecasted Trend'])
     else:
         st.info("Execute a fresh cross-market scan above to generate visual historical charts.")
