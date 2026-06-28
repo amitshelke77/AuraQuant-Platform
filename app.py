@@ -26,12 +26,23 @@ def get_sentiment_score(ticker):
 
 def run_production_scanner(tickers, capital_base, max_risk_pct):
     signal_ledger = []
-    # Batch download historical closing prices for calculation
-    data = yf.download(tickers, start="2025-01-01", auto_adjust=True)['Close']
     
+    # Download historical data cleanly and handle potential MultiIndex columns
+    raw_data = yf.download(tickers, start="2025-01-01", auto_adjust=True)
+    
+    # Isolate Close prices safely
+    if 'Close' in raw_data.columns.levels[0] if isinstance(raw_data.columns, pd.MultiIndex) else False:
+        data = raw_data['Close']
+    else:
+        data = raw_data
+        
     for ticker in tickers:
         try:
-            df_ticker = data[ticker].to_frame(name='Price') if ticker in data.columns else data.copy()
+            if ticker in data.columns:
+                df_ticker = data[ticker].to_frame(name='Price')
+            else:
+                continue
+                
             df_ticker.dropna(inplace=True)
             
             # 20-Day Bollinger Band Parameters
@@ -43,12 +54,11 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
             latest = df_ticker.iloc[-1]
             current_price = latest['Price']
             
-            # Technical Risk Boundary Logic
             lower_band = latest['Lower']
             upper_band = latest['Upper']
             
             # Risk Sizing Math
-            stop_loss = lower_band * 0.98  # Stop loss set 2% below technical support band
+            stop_loss = lower_band * 0.98  
             risk_per_share = max(current_price - stop_loss, current_price * 0.02) 
             cash_at_risk = capital_base * (max_risk_pct / 100.0)
             calculated_shares = int(cash_at_risk // risk_per_share)
@@ -106,14 +116,11 @@ st.sidebar.info(f"💼 Risk Threshold per Asset: ₹{total_risk_exposure:,.2f}")
 # ==========================================
 st.header("🔍 Real-Time Multi-Asset Scanner & Alpha Intelligence")
 
-# Global placeholder initialization for charts to read safely
-historical_data = None
-
 if st.button("🔄 Execute Fresh Cross-Market Scan"):
     with st.spinner("Processing multi-asset risk bands & calculation models..."):
         ledger_df, historical_data = run_production_scanner(tickers, investment_base, risk_percentage)
         
-        # Save historical price table data in current session state to keep it persistent for charts
+        # Keep data persistent across sessions cleanly
         st.session_state['historical_data'] = historical_data
         
         actionable = ledger_df[ledger_df['Signal Matrix'] != "⚪ HOLD (No Signal)"]
@@ -159,10 +166,10 @@ if 'historical_data' in st.session_state and st.session_state['historical_data']
     st.markdown("---")
     st.header("📈 Institutional Multi-Asset Price Intelligence Trends")
     
-    # Dropdown menu to filter data views smoothly
     selected_chart_asset = st.selectbox("Select Target Asset Timeline to Plot", tickers)
     
     if selected_chart_asset in st.session_state['historical_data'].columns:
+        # Isolate the specific asset data series and drop empty values
         chart_df = st.session_state['historical_data'][selected_chart_asset].dropna()
         st.line_chart(chart_df)
     else:
