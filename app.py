@@ -27,23 +27,35 @@ def get_sentiment_score(ticker):
 def run_production_scanner(tickers, capital_base, max_risk_pct):
     signal_ledger = []
     
-    # Download historical data cleanly and handle potential MultiIndex columns
-    raw_data = yf.download(tickers, start="2025-01-01", auto_adjust=True)
+    # Download historical data cleanly without grouping parameters
+    raw_data = yf.download(tickers, start="2025-01-01", group_by='column')
     
-    # Isolate Close prices safely
-    if 'Close' in raw_data.columns.levels[0] if isinstance(raw_data.columns, pd.MultiIndex) else False:
-        data = raw_data['Close']
+    # Explicitly pull close prices across columns
+    if isinstance(raw_data.columns, pd.MultiIndex):
+        if 'Close' in raw_data.columns.levels[0]:
+            data = raw_data['Close'].copy()
+        elif 'Adj Close' in raw_data.columns.levels[0]:
+            data = raw_data['Adj Close'].copy()
+        else:
+            data = raw_data.copy()
     else:
-        data = raw_data
+        data = raw_data.copy()
+
+    # Create a fresh, single-level dataframe specifically optimized for charting engines
+    chart_clean_df = pd.DataFrame(index=data.index)
         
     for ticker in tickers:
         try:
+            # Handle potential single vs multi-column Series extractions
             if ticker in data.columns:
-                df_ticker = data[ticker].to_frame(name='Price')
+                series = data[ticker]
+                if isinstance(series, pd.DataFrame):
+                    series = series.iloc[:, 0]
+                
+                df_ticker = series.to_frame(name='Price').dropna()
+                chart_clean_df[ticker] = series # Map to clean chart engine dataframe
             else:
                 continue
-                
-            df_ticker.dropna(inplace=True)
             
             # 20-Day Bollinger Band Parameters
             df_ticker['MA'] = df_ticker['Price'].rolling(20).mean()
@@ -53,7 +65,6 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
             
             latest = df_ticker.iloc[-1]
             current_price = latest['Price']
-            
             lower_band = latest['Lower']
             upper_band = latest['Upper']
             
@@ -88,7 +99,7 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
         except:
             pass
             
-    return pd.DataFrame(signal_ledger), data
+    return pd.DataFrame(signal_ledger), chart_clean_df
 
 # ==========================================
 # MAIN TERMINAL HEADER
@@ -120,7 +131,6 @@ if st.button("🔄 Execute Fresh Cross-Market Scan"):
     with st.spinner("Processing multi-asset risk bands & calculation models..."):
         ledger_df, historical_data = run_production_scanner(tickers, investment_base, risk_percentage)
         
-        # Keep data persistent across sessions cleanly
         st.session_state['historical_data'] = historical_data
         
         actionable = ledger_df[ledger_df['Signal Matrix'] != "⚪ HOLD (No Signal)"]
@@ -169,8 +179,8 @@ if 'historical_data' in st.session_state and st.session_state['historical_data']
     selected_chart_asset = st.selectbox("Select Target Asset Timeline to Plot", tickers)
     
     if selected_chart_asset in st.session_state['historical_data'].columns:
-        # Isolate the specific asset data series and drop empty values
-        chart_df = st.session_state['historical_data'][selected_chart_asset].dropna()
-        st.line_chart(chart_df)
+        # Pull values explicitly as standard float array to break nested indexing bugs
+        chart_series = st.session_state['historical_data'][selected_chart_asset].dropna()
+        st.line_chart(chart_series)
     else:
         st.info("Execute a fresh cross-market scan above to generate visual historical charts.")
