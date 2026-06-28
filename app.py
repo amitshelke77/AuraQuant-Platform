@@ -163,7 +163,7 @@ with col2:
     st.table(pd.DataFrame(crisis_scenarios))
 
 # ==========================================
-# CORE COMPONENT 3: HISTORICAL & FORECAST INTERACTIVE VISUALIZATION
+# CORE COMPONENT 3: HISTORICAL & FORECAST VISUALIZATION
 # ==========================================
 if 'historical_data' in st.session_state and st.session_state['historical_data'] is not None:
     st.markdown("---")
@@ -173,46 +173,49 @@ if 'historical_data' in st.session_state and st.session_state['historical_data']
     chart_df = st.session_state['historical_data']
     
     if selected_chart_asset in chart_df.columns:
-        # 1. Clean up historical values
         clean_history = chart_df[[selected_chart_asset]].dropna()
         historical_prices = clean_history[selected_chart_asset].values
         historical_dates = pd.to_datetime(clean_history.index)
         
-        # 2. Fit a Linear Regression line to the last 30 training points
+        # Linear Regression Math (Last 30 points)
         lookback = min(30, len(historical_prices))
         y_train = historical_prices[-lookback:]
         x_train = np.arange(lookback)
         
-        # Matrix Math for least squares fit: y = mx + c
         A = np.vstack([x_train, np.ones(len(x_train))]).T
         m, c = np.linalg.lstsq(A, y_train, rcond=None)[0]
         
-        # 3. Project 14 calendar days forward into the future horizon
+        # Generate 14 days of future dates
         future_horizon_days = 14
         last_date = historical_dates[-1]
-        
         future_dates = [last_date + timedelta(days=i) for i in range(1, future_horizon_days + 1)]
+        
+        # Build projections
         future_x = np.arange(lookback, lookback + future_horizon_days)
         future_predictions = m * future_x + c
         
-        # 4. Construct a unified prediction mapping dataframe
+        # Create a single unified Dataframe containing all dates
         all_dates = list(historical_dates) + future_dates
         all_date_strings = [d.strftime('%Y-%m-%d') for d in all_dates]
         
         plot_df = pd.DataFrame(index=all_date_strings)
         
-        # Map historical line values (Leaves future blank so it doesn't drop to 0)
-        plot_df['Historical Price'] = pd.Series(historical_prices, index=[d.strftime('%Y-%m-%d') for d in historical_dates])
+        # Map historical prices (Leaves future dates as empty/NaN)
+        hist_series = pd.Series(historical_prices, index=[d.strftime('%Y-%m-%d') for d in historical_dates])
+        plot_df['Historical Price'] = hist_series
         
-        # Map predictive line values (Starts at the last historical point to keep the line connected)
-        forecast_series_values = [historical_prices[-1]] + list(future_predictions)
-        forecast_series_dates = [historical_dates[-1]] + future_dates
-        plot_df['Forecasted Trend'] = pd.Series(forecast_series_values, index=[d.strftime('%Y-%m-%d') for d in forecast_series_dates])
+        # Create a complete forecast line matching the full historical length
+        # This keeps the lines unbroken and properly colored in Streamlit
+        forecast_array = np.full(len(all_dates), np.nan)
+        forecast_array[len(historical_prices) - 1] = historical_prices[-1] # Bridge point
+        forecast_array[len(historical_prices):] = future_predictions
         
-        # Reset index to string for flawless axis presentation
-        plot_ready_df = plot_df.reset_index().rename(columns={'index': 'Date'})
+        plot_df['Forecasted Trend'] = forecast_array
         
-        # Render both tracking lines simultaneously
+        # Reset and clean index
+        plot_ready_df = plot_df.reset_index().rename(columns={'index': 'Date'}).dropna(how='all', subset=['Historical Price', 'Forecasted Trend'])
+        
+        # Render clean, explicit charting columns
         st.line_chart(data=plot_ready_df, x='Date', y=['Historical Price', 'Forecasted Trend'])
     else:
         st.info("Execute a fresh cross-market scan above to generate visual historical charts.")
