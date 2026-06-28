@@ -9,6 +9,18 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="AuraQuant Trader Terminal", layout="wide")
 
 # ==========================================
+# INITIALIZE LIVE SESSION STATE LEDGERS
+# ==========================================
+if 'portfolio' not in st.session_state:
+    st.session_state['portfolio'] = {}  # Format: { ticker: {"shares": X, "avg_price": Y} }
+if 'trade_history' not in st.session_state:
+    st.session_state['trade_history'] = []
+if 'historical_data' not in st.session_state:
+    st.session_state['historical_data'] = None
+if 'current_prices' not in st.session_state:
+    st.session_state['current_prices'] = {}
+
+# ==========================================
 # CORE MATHEMATICAL & RISK ENGINES
 # ==========================================
 def get_sentiment_score(ticker):
@@ -27,10 +39,10 @@ def get_sentiment_score(ticker):
 def run_production_scanner(tickers, capital_base, max_risk_pct):
     signal_ledger = []
     chart_clean_df = pd.DataFrame()
+    prices_map = {}
     
     for ticker in tickers:
         try:
-            # Download individual ticker data
             raw_ticker = yf.download(ticker, start="2025-01-01", progress=False)
             if raw_ticker.empty:
                 continue
@@ -63,6 +75,8 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
             lower_band = float(latest['Lower'])
             upper_band = float(latest['Upper'])
             
+            prices_map[ticker] = current_price
+            
             # Risk Sizing Math
             stop_loss = lower_band * 0.98  
             risk_per_share = max(current_price - stop_loss, current_price * 0.02) 
@@ -94,6 +108,7 @@ def run_production_scanner(tickers, capital_base, max_risk_pct):
         except:
             pass
             
+    st.session_state['current_prices'] = prices_map
     return pd.DataFrame(signal_ledger), chart_clean_df
 
 # ==========================================
@@ -127,20 +142,91 @@ future_horizon_days = st.sidebar.slider("Forecast Target Window (Days)", min_val
 # ==========================================
 st.header("🔍 Real-Time Multi-Asset Scanner & Alpha Intelligence")
 
-if st.button("🔄 Execute Fresh Cross-Market Scan"):
-    with st.spinner("Processing multi-asset risk bands & calculation models..."):
-        ledger_df, historical_data = run_production_scanner(tickers, investment_base, risk_percentage)
-        st.session_state['historical_data'] = historical_data
+if st.button("🔄 Execute Fresh Cross-Market Scan") or st.session_state['historical_data'] is not None:
+    # Only pull fresh details if explicitly clicked or data hasn't been compiled yet
+    if st.session_state['historical_data'] is None or st.sidebar.button("Force Re-download"):
+        with st.spinner("Processing multi-asset risk bands & calculation models..."):
+            ledger_df, historical_data = run_production_scanner(tickers, investment_base, risk_percentage)
+            st.session_state['historical_data'] = historical_data
+            st.session_state['ledger_df'] = ledger_df
+    else:
+        ledger_df = st.session_state['ledger_df']
+
+    actionable = ledger_df[ledger_df['Signal Matrix'] != "⚪ HOLD (No Signal)"]
+    if not actionable.empty:
+        st.warning("⚠️ CRITICAL REVERSION SIGNALS DETECTED - RISK ALLOCATION ACTIVE")
+        st.table(actionable[["Asset", "Current Price", "Signal Matrix", "Recommended Sizing"]])
         
-        actionable = ledger_df[ledger_df['Signal Matrix'] != "⚪ HOLD (No Signal)"]
-        if not actionable.empty:
-            st.warning("⚠️ CRITICAL REVERSION SIGNALS DETECTED - RISK ALLOCATION ACTIVE")
-            st.table(actionable[["Asset", "Current Price", "Signal Matrix", "Recommended Sizing"]])
-        else:
-            st.success("✅ SYSTEM STATE: NEUTRAL. No assets have breached statistical bands today. Preserve cash equity.")
+    st.subheader("📋 Complete Asset Universe Matrix")
+    st.table(ledger_df)
+
+# ==========================================
+# NEW FEATURE: SIMULATED ORDER EXECUTION DESK
+# ==========================================
+st.markdown("---")
+st.header("⚡ Live Institutional Order Execution Panel")
+order_col1, order_col2, order_col3 = st.columns(3)
+
+with order_col1:
+    trade_ticker = st.selectbox("Select Target Asset to Trade", tickers)
+with order_col2:
+    trade_action = st.radio("Order Direction", ["BUY", "SELL"], horizontal=True)
+with order_col3:
+    trade_shares = st.number_input("Order Quantity (Shares)", min_value=1, value=10, step=1)
+
+if st.button("🚀 Transmit Order Payload"):
+    current_market_price = st.session_state['current_prices'].get(trade_ticker, None)
+    
+    if current_market_price is None:
+        st.error("Please execute a cross-market scan above to fetch current asset prices first.")
+    else:
+        # Business logic rules for trade processing
+        if trade_action == "BUY":
+            current_holding = st.session_state['portfolio'].get(trade_ticker, {"shares": 0, "avg_price": 0.0})
+            total_shares = current_holding["shares"] + trade_shares
+            total_cost = (current_holding["shares"] * current_holding["avg_price"]) + (trade_shares * current_market_price)
+            avg_entry = total_cost / total_shares if total_shares > 0 else 0.0
             
-        st.subheader("📋 Complete Asset Universe Matrix")
-        st.table(ledger_df)
+            st.session_state['portfolio'][trade_ticker] = {"shares": total_shares, "avg_price": avg_entry}
+            st.success(f"Execution Successful: Bought {trade_shares} of {trade_ticker} at ₹{current_market_price:,.2f}")
+            
+        elif trade_action == "SELL":
+            current_holding = st.session_state['portfolio'].get(trade_ticker, {"shares": 0, "avg_price": 0.0})
+            if current_holding["shares"] < trade_shares:
+                st.error(f"Insufficient Inventory. You only hold {current_holding['shares']} shares of {trade_ticker}.")
+            else:
+                total_shares = current_holding["shares"] - trade_shares
+                if total_shares == 0:
+                    st.session_state['portfolio'].pop(trade_ticker, None)
+                else:
+                    st.session_state['portfolio'][trade_ticker]["shares"] = total_shares
+                st.success(f"Execution Successful: Sold {trade_shares} of {trade_ticker} at ₹{current_market_price:,.2f}")
+
+# ==========================================
+# NEW FEATURE: PORTFOLIO LEDGER DASHBOARD
+# ==========================================
+if st.session_state['portfolio']:
+    st.subheader("💼 Active Simulated Portfolio Positions")
+    positions_summary = []
+    
+    for ticker, info in st.session_state['portfolio'].items():
+        current_p = st.session_state['current_prices'].get(ticker, info["avg_price"])
+        total_cost_basis = info["shares"] * info["avg_price"]
+        current_value = info["shares"] * current_p
+        floating_pnl = current_value - total_cost_basis
+        pnl_pct = (floating_pnl / total_cost_basis) * 100 if total_cost_basis > 0 else 0.0
+        
+        positions_summary.append({
+            "Asset": ticker,
+            "Shares Owned": f"{info['shares']:,}",
+            "Avg Entry Price": f"₹{info['avg_price']:,.2f}",
+            "Current Price": f"₹{current_p:,.2f}",
+            "Total Cost Basis": f"₹{total_cost_basis:,.2f}",
+            "Current Value": f"₹{current_value:,.2f}",
+            "Floating P&L (₹)": f"₹{floating_pnl:,.2f}",
+            "Return (%)": f"{pnl_pct:+.2f}%"
+        })
+    st.table(pd.DataFrame(positions_summary))
 
 # ==========================================
 # CORE COMPONENT 2: PORTFOLIO ALLOCATION MATRIX
@@ -170,7 +256,7 @@ with col2:
 # ==========================================
 # CORE COMPONENT 3: HISTORICAL & FORECAST VISUALIZATION
 # ==========================================
-if 'historical_data' in st.session_state and st.session_state['historical_data'] is not None:
+if st.session_state['historical_data'] is not None:
     st.markdown("---")
     st.header("📈 Predictive Multi-Asset Price Horizon Trends")
     
@@ -179,53 +265,41 @@ if 'historical_data' in st.session_state and st.session_state['historical_data']
     
     if selected_chart_asset in chart_df.columns:
         clean_history = chart_df[[selected_chart_asset]].dropna()
-        
-        # Crop history to the user's selected lookback preference for a clear visual window
         clean_history = clean_history.tail(chart_lookback_days)
         
         historical_prices = clean_history[selected_chart_asset].values
         historical_dates = pd.to_datetime(clean_history.index)
         
-        # Linear Regression Math (Fitted to the lookback window)
+        # Linear Regression Math
         lookback = len(historical_prices)
         x_train = np.arange(lookback)
         A = np.vstack([x_train, np.ones(lookback)]).T
         m, c = np.linalg.lstsq(A, historical_prices, rcond=None)[0]
         
-        # Generate custom future calendar dates
         last_date = historical_dates[-1]
         future_dates = [last_date + timedelta(days=i) for i in range(1, future_horizon_days + 1)]
         
-        # Build projections
         future_x = np.arange(lookback, lookback + future_horizon_days)
         future_predictions = m * future_x + c
         
-        # Standard deviation volatility for predictive error bands
         volatility_std = np.std(historical_prices) if len(historical_prices) > 1 else 1.0
         
-        # Assemble master chart array mapping
         all_dates = list(historical_dates) + future_dates
         all_date_strings = [d.strftime('%Y-%m-%d') for d in all_dates]
         
         plot_df = pd.DataFrame(index=all_date_strings)
-        
-        # Map past history
         plot_df['Historical Price'] = pd.Series(historical_prices, index=[d.strftime('%Y-%m-%d') for d in historical_dates])
         
-        # Connect forecast line seamlessly from final close index position
         forecast_array = np.full(len(all_dates), np.nan)
         forecast_array[len(historical_prices) - 1] = historical_prices[-1]
         forecast_array[len(historical_prices):] = future_predictions
         plot_df['Expected Path Prediction'] = forecast_array
         
-        # Create lower/upper threshold risk corridors
         upper_corridor = np.full(len(all_dates), np.nan)
         lower_corridor = np.full(len(all_dates), np.nan)
-        
         upper_corridor[len(historical_prices) - 1] = historical_prices[-1]
         lower_corridor[len(historical_prices) - 1] = historical_prices[-1]
         
-        # Fan out error bands based on distance time variance
         for idx in range(future_horizon_days):
             time_factor = np.sqrt(idx + 1) * 0.35
             upper_corridor[len(historical_prices) + idx] = future_predictions[idx] + (volatility_std * time_factor)
@@ -235,8 +309,4 @@ if 'historical_data' in st.session_state and st.session_state['historical_data']
         plot_df['Target Floor Boundary'] = lower_corridor
         
         plot_ready_df = plot_df.reset_index().rename(columns={'index': 'Date'})
-        
-        # Draw complete institutional forecasting corridor
         st.line_chart(data=plot_ready_df, x='Date', y=['Historical Price', 'Expected Path Prediction', 'Target Ceiling Boundary', 'Target Floor Boundary'])
-    else:
-        st.info("Execute a fresh cross-market scan above to generate visual historical charts.")
