@@ -272,7 +272,7 @@ if st.button("🔄 Execute Fresh Cross-Market Scan") or st.session_state['histor
     st.table(ledger_df)
 
 # ==========================================
-# COMPONENT 2: THE BLOOMBERG NEWS SECTION
+# COMPONENT 2: THE NATIVE STREAMLIT NEWS DESK
 # ==========================================
 st.markdown("---")
 st.header("📰 Live Bloomberg-Style News Desk Terminal")
@@ -282,40 +282,18 @@ selected_news_asset = st.selectbox("Select Asset to Filter Breaking Headline Str
 if selected_news_asset in st.session_state['live_news_stream']:
     news_items = st.session_state['live_news_stream'][selected_news_asset]
     
-    st.markdown("""
-        <style>
-        .news-row {
-            padding: 12px;
-            border-bottom: 1px solid #222222;
-            transition: background-color 0.2s;
-        }
-        .news-row:hover {
-            background-color: #111520;
-        }
-        .news-time {
-            color: #ffaa00;
-            font-family: monospace;
-            font-size: 13px;
-        }
-        .news-link {
-            color: #00bfff !important;
-            text-decoration: none !important;
-            font-weight: 600;
-        }
-        .news-link:hover {
-            text-decoration: underline !important;
-            color: #ffffff !important;
-        }
-        </style>
-    """, unsafe_allow_html=True)
-
-    for item in news_items:
-        st.markdown(f"""
-        <div class="news-row">
-            <span class="news-time">⏱️ {item['Time']}</span> &nbsp;&nbsp;
-            <a class="news-link" href="{item['Link']}" target="_blank">{item['Headline']}</a>
-        </div>
-        """, unsafe_allow_html=True)
+    # Handle clean native layouts for fallbacks or actual headlines
+    if len(news_items) == 1 and "No active breaking stories" in news_items[0]['Headline']:
+        st.info("No active breaking stories found for this asset class.")
+    else:
+        for item in news_items:
+            # Use columns to mimic an institutional wire feed line
+            time_col, text_col = st.columns([1, 6])
+            with time_col:
+                st.caption(f"⏱️ {item['Time']}")
+            with text_col:
+                # Native markdown link rendering (highly stable, color inherited from theme)
+                st.markdown(f"[{item['Headline']}]({item['Link']})")
 else:
     st.info("Run a Cross-Market Scan above to sync live breaking news wires.")
 
